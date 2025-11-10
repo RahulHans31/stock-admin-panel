@@ -30,11 +30,11 @@ class handler(BaseHTTPRequestHandler):
             in_stock_messages = main_logic()
 
             if in_stock_messages:
-                print(f"Found {len(in_stock_messages)} items in stock. Sending Telegram message.")
+                print(f"[info] Found {len(in_stock_messages)} unique products in stock. Sending Telegram message.")
                 final_message = "🔥 *Stock Alert!*\n\n" + "\n\n".join(in_stock_messages)
                 send_telegram_message(final_message)
             else:
-                print("All items out of stock or API failures. Notification sent.")
+                print("[info] All items out of stock or API failures. Notification sent.")
 
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
@@ -42,7 +42,7 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({'status': 'ok', 'found': len(in_stock_messages)}).encode())
 
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"[error] {e}")
             self.send_response(500)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
@@ -50,17 +50,19 @@ class handler(BaseHTTPRequestHandler):
 
 # --- 3. DATABASE ---
 def get_products_from_db():
-    print("Connecting to database...")
+    print("[info] Connecting to database...")
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
     cursor.execute("SELECT name, url, product_id, store_type, affiliate_link FROM products")
     products = cursor.fetchall()
     conn.close()
 
-    return [
+    product_list = [
         {"name": row[0], "url": row[1], "productId": row[2], "storeType": row[3], "affiliateLink": row[4]}
         for row in products
     ]
+    print(f"[info] Loaded {len(product_list)} products from database.")
+    return product_list
 
 # --- 4. TELEGRAM HELPERS ---
 def get_all_chat_ids():
@@ -74,13 +76,12 @@ def get_all_chat_ids():
     ]
 
 def send_telegram_message(message):
-    """Send message to all chat IDs."""
     if not TELEGRAM_BOT_TOKEN:
-        print("Telegram BOT TOKEN not set.")
+        print("[warn] Telegram BOT TOKEN not set.")
         return
 
     chat_ids = get_all_chat_ids()
-    print(f"Sending message to {len(chat_ids)} users...")
+    print(f"[info] Sending message to {len(chat_ids)} Telegram users...")
 
     for chat_id in chat_ids:
         payload = {
@@ -93,12 +94,12 @@ def send_telegram_message(message):
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
             res = requests.post(url, json=payload, timeout=5)
             if res.status_code != 200:
-                print(f"⚠️ Telegram error for {chat_id}: {res.text}")
+                print(f"[warn] Telegram error for {chat_id}: {res.text}")
             else:
-                print(f"✅ Sent to {chat_id}")
+                print(f"[info] ✅ Sent to {chat_id}")
             time.sleep(0.3)
         except Exception as e:
-            print(f"❌ Failed to send to {chat_id}: {e}")
+            print(f"[error] Failed to send to {chat_id}: {e}")
 
 # --- 5. CROMA CHECKER ---
 def check_croma(product, pincode):
@@ -122,10 +123,14 @@ def check_croma(product, pincode):
     try:
         res = requests.post(url, headers=headers, json=payload, timeout=10)
         data = res.json()
+
         if data.get("promise", {}).get("suggestedOption", {}).get("option", {}).get("promiseLines"):
+            print(f"[CROMA] ✅ {product['name']} available at {pincode}")
             return f'✅ *In Stock at Croma ({pincode})*\n[{product["name"]}]({product["affiliateLink"] or product["url"]})'
+        else:
+            print(f"[CROMA] ❌ {product['name']} not available at {pincode}")
     except Exception as e:
-        print(f"Croma check failed for {product['name']}: {e}")
+        print(f"[error] Croma check failed for {product['name']}: {e}")
     return None
 
 # --- 6. AMAZON CHECKER ---
@@ -139,7 +144,6 @@ def get_signature_key(key, date_stamp, region_name, service_name):
     return sign(k_service, "aws4_request")
 
 def check_amazon(product):
-    """Check Amazon availability via PAAPI (no retry on throttling)."""
     asin = product["productId"]
     method = "POST"
     endpoint = "https://webservices.amazon.in/paapi5/getitems"
@@ -206,23 +210,25 @@ def check_amazon(product):
             availability = item["Offers"]["Listings"][0]["Availability"]["Message"]
             price = item["Offers"]["Listings"][0]["Price"]["DisplayAmount"]
             link = product["affiliateLink"] or product["url"]
+            print(f"[AMAZON] ✅ {title} - {availability}")
             return f"🛒 *Amazon*\n[{title}]({link})\n💰 {price}\n📦 {availability}"
 
         if res.status_code == 429 or "TooManyRequests" in str(data):
-            print(f"Amazon throttled for {product['name']}. Skipping.")
+            print(f"[AMAZON] ⚠️ Throttled for {product['name']}, skipping.")
             return None
 
-        print(f"Amazon API Error: {data}")
+        print(f"[AMAZON] ❌ API Error: {data}")
     except Exception as e:
-        print(f"Amazon check failed for {product['name']}: {e}")
+        print(f"[error] Amazon check failed for {product['name']}: {e}")
 
     return None
 
 # --- 7. MAIN LOGIC ---
 def main_logic():
-    print("Starting stock check...")
+    print("[info] Starting stock check...")
     products = get_products_from_db()
     in_stock_messages = []
+    seen_products = set()
     amazon_failures = 0
 
     for product in products:
@@ -230,12 +236,14 @@ def main_logic():
         if product["storeType"] == "croma":
             for pincode in PINCODES_TO_CHECK:
                 result = check_croma(product, pincode)
-                if result:
+                if result and product["name"] not in seen_products:
+                    seen_products.add(product["name"])
                     in_stock_messages.append(result)
                     break
         elif product["storeType"] == "amazon":
             result = check_amazon(product)
-            if result:
+            if result and product["name"] not in seen_products:
+                seen_products.add(product["name"])
                 in_stock_messages.append(result)
             elif result is None:
                 amazon_failures += 1
@@ -244,5 +252,7 @@ def main_logic():
         msg = f"❌ No stock available.\nAmazon API failed for {amazon_failures}/{sum(1 for p in products if p['storeType']=='amazon')} items."
         print(msg)
         send_telegram_message(msg)
+    else:
+        print(f"[info] ✅ Found {len(in_stock_messages)} unique products in stock.")
 
     return in_stock_messages
