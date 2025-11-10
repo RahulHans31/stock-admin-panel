@@ -2,13 +2,9 @@ from http.server import BaseHTTPRequestHandler
 import os, json, requests, psycopg2
 from urllib.parse import urlparse, parse_qs
 
-# --- NEW AMAZON API IMPORTS ---
-from paapi5_python_sdk.api.default_api import DefaultApi
-from paapi5_python_sdk.models.get_items_request import GetItemsRequest
-from paapi5_python_sdk.models.get_items_resource import GetItemsResource
-from paapi5_python_sdk.partner_type import PartnerType
-from paapi5_python_sdk.rest import ApiException
-# --------------------------------
+# --- NEW, SIMPLER AMAZON IMPORTS ---
+from amazon.paapi import AmazonAPI, Country
+# ------------------------------------
 
 # --- 1. CONFIGURATION ---
 PINCODES_TO_CHECK = ['132001']
@@ -16,7 +12,7 @@ DATABASE_URL = os.environ.get('DATABASE_URL')
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 CRON_SECRET = os.environ.get('CRON_SECRET')
 
-# --- NEW AMAZON SECRETS ---
+# --- AMAZON SECRETS ---
 AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
 AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
 AMAZON_PARTNER_TAG = os.environ.get('AMAZON_PARTNER_TAG')
@@ -62,8 +58,6 @@ def get_products_from_db():
     print("Connecting to database...")
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
-    
-    # Updated query to get Croma AND Amazon products
     cursor.execute("SELECT name, url, product_id, store_type, affiliate_link FROM products WHERE store_type IN ('croma', 'amazon')")
     products = cursor.fetchall()
     conn.close()
@@ -80,24 +74,14 @@ def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN:
         print("Telegram BOT TOKEN not set. Skipping message.")
         return
-
-    # Your hardcoded list of chat IDs
     chat_ids = ['7992845749', '984016385' , '6644657779' , '8240484793' , '1813686494' ,'1438419270' ,'939758815' , '7500224400' , '8284863866' , '837532484' , '667911343' , '1476695901' , '6878100797' , '574316265' , '1460192633' , '978243265' ,'5871190519' ,'766044262' ,'1639167211' , '849850934' ,'757029917' , '5756316614' ,'5339576661' , '6137007196' , '7570729917' ,'79843912' , '1642837409' , '724035898'] 
     
     print(f"Sending message to {len(chat_ids)} users...")
 
     for chat_id in chat_ids:
-        if not chat_id.strip():
-            continue
-            
+        if not chat_id.strip(): continue
         url = f"https{api.telegram.org/bot}{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            'chat_id': chat_id.strip(),
-            'text': message,
-            'parse_mode': 'Markdown',
-            'disable_web_page_preview': True
-        }
-        
+        payload = {'chat_id': chat_id.strip(), 'text': message, 'parse_mode': 'Markdown', 'disable_web_page_preview': True}
         try:
             requests.post(url, json=payload, timeout=5)
         except Exception as e:
@@ -113,16 +97,14 @@ def check_croma(product, pincode):
         res = requests.post(url, headers=headers, json=payload, timeout=10)
         res.raise_for_status() 
         data = res.json()
-        
         if data.get("promise", {}).get("suggestedOption", {}).get("option", {}).get("promiseLines", {}).get("promiseLine"):
             link_to_send = product["affiliateLink"] or product["url"]
             return f'✅ *In Stock at Croma ({pincode})*\n[{product["name"]}]({link_to_send})'
-            
     except Exception as e:
         print(f'Error checking Croma ({product["name"]}): {e}')
     return None 
 
-# --- 6. NEW AMAZON CHECKER (Using PAAPI v5) ---
+# --- 6. NEW AMAZON CHECKER (Using amazon-paapi5) ---
 def check_amazon(product):
     if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AMAZON_PARTNER_TAG]):
         print("Amazon API credentials not set. Skipping Amazon.")
@@ -130,47 +112,43 @@ def check_amazon(product):
 
     asin = product["productId"]
     
-    api_client = DefaultApi(
-        access_key=AWS_ACCESS_KEY_ID,
-        secret_key=AWS_SECRET_ACCESS_KEY,
-        host="webservices.amazon.in",
-        region="eu-west-1" 
-    )
-
-    resources = [
-        GetItemsResource.ITEMINFO_TITLE,
-        GetItemsResource.OFFERS_LISTINGS_AVAILABILITY_MESSAGE,
-        GetItemsResource.OFFERS_LISTINGS_CONDITION,
-        GetItemsResource.OFFERS_LISTINGS_PRICE
-    ]
-
-    get_items_request = GetItemsRequest(
-        item_ids=[asin],
-        resources=resources,
-        partner_tag=AMAZON_PARTNER_TAG,
-        partner_type=PartnerType.ASSOCIATES,
-        marketplace="www.amazon.in"
-    )
-
     try:
+        # Initialize the API client using the library you found
+        amazon = AmazonAPI(
+            AWS_ACCESS_KEY_ID, 
+            AWS_SECRET_ACCESS_KEY, 
+            AMAZON_PARTNER_TAG, 
+            Country.IN # Use Country.IN for webservices.amazon.in
+        )
+        
         print(f"Checking Amazon for: {product['name']}...")
-        response = api_client.get_items(get_items_request)
+        # Call the API to get item info
+        # This matches your curl request for Availability.Message
+        response = amazon.get_items(
+            item_ids=[asin],
+            resources=["Offers.Listings.Availability.Message"]
+        )
 
-        if response.items_result and response.items_result.items:
-            item = response.items_result.items[0]
-            if item.offers and item.offers.listings:
-                availability = item.offers.listings[0].availability.message
-                print(f"...Amazon item {product['name']} is: {availability}")
-                
-                if "in stock" in availability.lower():
-                    link_to_send = product["affiliateLink"] or product["url"]
-                    return f'✅ *InStock at Amazon*\n[{product["name"]}]({link_to_send})'
+        # Check for API errors
+        if response.get('errors'):
+            print(f"Error checking Amazon API for ASIN {asin}: {response['errors'][0].message}")
+            return None
+        
+        # Get the item data
+        item = response.get('data', {}).get(asin)
+        
+        if item and item.offers and item.offers.listings:
+            availability = item.offers.listings[0].availability.message
+            print(f"...Amazon item {product['name']} is: {availability}")
+            
+            # Check if the message is "In Stock."
+            if "in stock" in availability.lower():
+                link_to_send = product["affiliateLink"] or product["url"]
+                return f'✅ *In Stock at Amazon*\n[{product["name"]}]({link_to_send})'
         
         print(f"...Amazon item {product['name']} is Out of Stock.")
         return None
 
-    except ApiException as e:
-        print(f"Error checking Amazon API for ASIN {asin}: {e}")
     except Exception as e:
         print(f"Non-API error checking Amazon ({product['name']}): {e}")
     
@@ -184,22 +162,20 @@ def main_logic():
     except Exception as e:
         print(f"Failed to fetch products from database: {e}")
         send_telegram_message(f"❌ Your checker script failed to connect to the database.")
-        return [] # Return empty list on failure
+        return []
 
     in_stock_messages = []
     
     for product in products_to_track:
         result_message = None
         if product["storeType"] == 'croma':
-            # Croma check needs to loop through pincodes
             for pincode in PINCODES_TO_CHECK:
                 result_message = check_croma(product, pincode)
                 if result_message:
                     in_stock_messages.append(result_message)
-                    break # Found stock, stop checking other pincodes for this item
+                    break 
         
         elif product["storeType"] == 'amazon':
-            # Amazon check doesn't use pincode, runs once
             result_message = check_amazon(product)
             if result_message:
                 in_stock_messages.append(result_message)
