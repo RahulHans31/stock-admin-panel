@@ -17,6 +17,9 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AMAZON_PARTNER_TAG = os.getenv("AMAZON_PARTNER_TAG")
 
+# Flipkart Proxy (AlwaysData)
+FLIPKART_PROXY_URL = "https://rknldeals.alwaysdata.net/flipkart_check"
+
 # ==================================
 # 🧠 VERCEL HANDLER
 # ==================================
@@ -153,59 +156,32 @@ def check_croma(product, pincode):
     return None
 
 # ==================================
-# 🟣 FLIPKART ROME API CHECKER
+# 🟣 FLIPKART VIA PROXY
 # ==================================
-def check_flipkart_api(product, pincode="132001"):
-    """Direct call to Flipkart's Rome API (to test if Vercel IP works)."""
+def check_flipkart(product, pincode="132001"):
+    """Call Flipkart via AlwaysData proxy."""
     try:
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Origin": "https://www.flipkart.com",
-            "Referer": "https://www.flipkart.com",
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "X-User-Agent": (
-                "Mozilla/5.0 FKUA/msite/0.0.3/msite/Mobile"
-            ),
-            "flipkart_secure": "true"
-        }
+        payload = {"productId": product["productId"], "pincode": pincode}
+        res = requests.post(FLIPKART_PROXY_URL, json=payload, timeout=25)
 
-        payload = {
-            "requestContext": {
-                "products": [{"productId": product["productId"]}],
-                "marketplace": "FLIPKART"
-            },
-            "locationContext": {"pincode": pincode}
-        }
-
-        url = "https://2.rome.api.flipkart.com/api/3/product/serviceability"
-
-        res = requests.post(url, headers=headers, json=payload, timeout=15)
         if res.status_code != 200:
-            print(f"[FLIPKART] ⚠️ API call failed for {product['name']} ({res.status_code})")
+            print(f"[FLIPKART] ⚠️ Proxy failed ({res.status_code}) for {product['name']}")
             return None
 
         data = res.json()
-
-        try:
-            listing = data["RESPONSE"][product["productId"]]["listingSummary"]
-            available = listing.get("available", False)
-        except Exception:
-            available = False
+        response = data.get("RESPONSE", {}).get(product["productId"], {})
+        listing = response.get("listingSummary", {})
+        available = listing.get("available", False)
 
         if available:
-            print(f"[FLIPKART] ✅ {product['name']} deliverable at {pincode}")
+            print(f"[FLIPKART] ✅ {product['name']} deliverable to {pincode}")
             return f"✅ *Flipkart*\n[{product['name']}]({product['affiliateLink'] or product['url']})"
 
-        print(f"[FLIPKART] ❌ {product['name']} unavailable at {pincode}")
+        print(f"[FLIPKART] ❌ {product['name']} not deliverable at {pincode}")
         return None
 
     except Exception as e:
-        print(f"[error] Flipkart API failed for {product['name']}: {e}")
+        print(f"[error] Flipkart proxy check failed for {product['name']}: {e}")
         return None
 
 # ==================================
@@ -322,7 +298,7 @@ def main_logic():
         elif product["storeType"] == "flipkart":
             flip_total += 1
             for pincode in PINCODES_TO_CHECK:
-                result = check_flipkart_api(product, pincode)
+                result = check_flipkart(product, pincode)
                 if result:
                     flip_count += 1
                     in_stock.append(result)
