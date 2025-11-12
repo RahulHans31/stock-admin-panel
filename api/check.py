@@ -1,4 +1,3 @@
-from http.server import BaseHTTPRequestHandler
 import os, json, requests, psycopg2, datetime, time
 from urllib.parse import urlparse, parse_qs
 from bs4 import BeautifulSoup
@@ -6,10 +5,14 @@ from bs4 import BeautifulSoup
 # ==================================
 # 🔧 CONFIGURATION
 # ==================================
-PINCODES_TO_CHECK = ["132001"]
+# Load PIN codes from a comma-separated environment variable (e.g., "132001,110001")
+PINCODES_STR = os.getenv("PINCODES_TO_CHECK", "132001") # Defaults to 132001
+PINCODES_TO_CHECK = [p.strip() for p in PINCODES_STR.split(',') if p.strip()]
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_GROUP_ID = "-4789301236" # Telegram group ID
+# Make Telegram Group ID configurable via environment variable
+TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID", "-4789301236") 
 CRON_SECRET = os.getenv("CRON_SECRET")
 
 # Flipkart Proxy (AlwaysData)
@@ -170,7 +173,7 @@ def check_unicorn():
             sku = product_data.get("sku", "N/A")
             
             # Use the main product page URL for linking
-            product_url = "https://shop.unicornstore.in/iphone-17" 
+            product_url = "https://shop.unicornstore.in/type/iphone-17" 
             
             if int(quantity) > 0:
                 print(f"[UNICORN] ✅ {variant_name} is IN STOCK ({quantity} units)")
@@ -246,7 +249,7 @@ def check_croma(product, pincode):
 # ==================================
 # 🟣 FLIPKART VIA PROXY
 # ==================================
-def check_flipkart(product, pincode="132001"):
+def check_flipkart(product, pincode): 
     """Call Flipkart via AlwaysData proxy."""
     try:
         payload = {"productId": product["productId"], "pincode": pincode}
@@ -343,7 +346,163 @@ def check_amazon(product):
         return None
 
 # ==================================
-# 🚀 MAIN LOGIC (MODIFIED to include Unicorn)
+# 📱 IQOO HTML PARSER CHECKER
+# ==================================
+def check_iqoo(product):
+    """Check stock availability for an iQOO product by scraping its product page."""
+    url = product["url"]
+    print(f"[IQOO] Checking: {url}")
+
+    # Use a standard browser header/user-agent
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/137.0.0.0 Safari/537.36"
+        ),
+    }
+
+    try:
+        res = requests.get(url, headers=headers, timeout=20)
+        # res.raise_for_status() # Don't raise for client errors, just check content
+        html = res.text
+        soup = BeautifulSoup(html, "html.parser")
+
+        # --- KEY SCRAPING LOGIC ---
+        # Look for the "Buy Now" button or stock status indicators
+        buy_now_button = soup.select_one('button:contains("Buy Now"), a:contains("Buy Now")')
+        stock_status = soup.select_one('.stock-status, .inventory-status') 
+        
+        availability_text = ""
+        is_available = False
+
+        if buy_now_button:
+            # Check if the button is active (not disabled or styled as out-of-stock)
+            button_classes = buy_now_button.get('class', [])
+            # Look for common disabled attributes/classes
+            is_disabled = buy_now_button.get('disabled') or 'disabled' in button_classes or 'out-of-stock' in button_classes
+            
+            if not is_disabled:
+                is_available = True
+            
+            availability_text = f"Buy Now button found. Disabled: {is_disabled}"
+            
+        elif stock_status:
+            # Check for specific stock messages
+            availability_text = stock_status.get_text(strip=True).lower()
+            if "in stock" in availability_text or "available" in availability_text:
+                 is_available = True
+                 
+        else:
+            # Fallback check: Look for a common out-of-stock phrase if no clear button/status is found
+            out_of_stock_phrases = ["out of stock", "currently unavailable", "notify me"]
+            page_text = soup.get_text().lower()
+            
+            if not any(phrase in page_text for phrase in out_of_stock_phrases):
+                 # If we can't find an explicit "out of stock" message, assume available
+                 is_available = True
+                 availability_text = "No explicit 'out of stock' message found on page."
+            else:
+                 availability_text = "Explicit 'out of stock' phrase found in page text."
+
+        # Try to find a price for reporting
+        price_el = soup.select_one('.price-tag, .product-price, .current_price, .selling-price')
+        price = price_el.get_text(strip=True) if price_el else None
+
+
+        if is_available:
+            print(f"[IQOO] ✅ {product['name']} is available.")
+            return (
+                f"✅ *iQOO*\n"
+                f"[{product['name']}]({product['affiliateLink'] or url})"
+                + (f"\n💰 Price: {price}" if price else "")
+            )
+        else:
+            print(f"[IQOO] ❌ {product['name']} appears unavailable. ({availability_text})")
+            return None
+
+    except Exception as e:
+        print(f"[error] iQOO check failed for {product['name']}: {e}")
+        return None
+
+# ==================================
+# 🤳 VIVO HTML PARSER CHECKER
+# ==================================
+def check_vivo(product):
+    """
+    Check stock availability for a Vivo product by scraping its product page.
+    This function looks for common "Buy Now" or "Out of Stock" indicators based on test script results.
+    """
+    url = product["url"]
+    name = product["name"]
+    print(f"[VIVO] Checking: {name} at {url}")
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/137.0.0.0 Safari/537.36"
+        ),
+    }
+
+    try:
+        res = requests.get(url, headers=headers, timeout=20)
+        print(f"[VIVO] Status code: {res.status_code}")
+        html = res.text
+        soup = BeautifulSoup(html, "html.parser")
+
+        # --- KEY SCRAPING LOGIC ---
+        # 1. Look for the main 'Buy Now' button/link. The active link selector observed in the test script: 'a.buyNow'
+        buy_now_link = soup.select_one('a.buyNow')
+        
+        # 2. Look for explicit 'Out of Stock' phrases.
+        out_of_stock_phrases = ["out of stock", "notify me", "currently unavailable"]
+        page_text_lower = soup.get_text().lower()
+        is_explicitly_oos = any(phrase in page_text_lower for phrase in out_of_stock_phrases)
+
+        is_available = False
+        availability_text = "Status indeterminate."
+
+        if buy_now_link and 'disabled' not in buy_now_link.get('class', []):
+            is_available = True
+            availability_text = f"Active 'Buy Now' link found."
+
+        elif is_explicitly_oos:
+            is_available = False
+            availability_text = "Explicit 'out of stock' phrase found in page text."
+
+        else:
+            # Fallback: If no clear stock status, check for the presence of the main button.
+            # If the key interaction element is present and no OOS text is found, assume available.
+            if buy_now_link:
+                is_available = True
+                availability_text = "Buy Now link found, status inconclusive via text."
+            else:
+                 is_available = False
+                 availability_text = "No active Buy Now link found."
+
+        # Try to find a price for reporting
+        price_el = soup.select_one('.price-tag, .product-price, .current_price, .selling-price, .js-final-price')
+        price = price_el.get_text(strip=True) if price_el else None
+
+
+        if is_available:
+            print(f"[VIVO] ✅ {name} is available.")
+            return (
+                f"✅ *Vivo*\n"
+                f"[{name}]({product['affiliateLink'] or url})"
+                + (f"\n💰 Price: {price}" if price else "")
+            )
+        else:
+            print(f"[VIVO] ❌ {name} appears unavailable. ({availability_text})")
+            return None
+
+    except Exception as e:
+        print(f"[error] Vivo check failed for {name}: {e}")
+        return None
+
+# ==================================
+# 🚀 MAIN LOGIC (MODIFIED to include Unicorn, iQOO, and Vivo)
 # ==================================
 def main_logic():
     start_time = time.time()
@@ -351,9 +510,9 @@ def main_logic():
     products = get_products_from_db()
     in_stock = []
     
-    # Initialize all counters, including Unicorn
-    croma_count = flip_count = amazon_count = unicorn_count = 0
-    croma_total = flip_total = amazon_total = unicorn_total = 0
+    # Initialize all counters, including Unicorn, iQOO, and Vivo
+    croma_count = flip_count = amazon_count = unicorn_count = iqoo_count = vivo_count = 0
+    croma_total = flip_total = amazon_total = unicorn_total = iqoo_total = vivo_total = 0
 
     # ----------------------------------------------------
     # NEW: Check Unicorn stock separately for iPhone 17 variants
@@ -392,16 +551,30 @@ def main_logic():
             if result:
                 amazon_count += 1
                 in_stock.append(result)
+        elif product["storeType"] == "iqoo":
+            iqoo_total += 1
+            result = check_iqoo(product)
+            if result:
+                iqoo_count += 1
+                in_stock.append(result)
+        elif product["storeType"] == "vivo": # <-- VIVO CHECK ADDED
+            vivo_total += 1
+            result = check_vivo(product)
+            if result:
+                vivo_count += 1
+                in_stock.append(result)
 
     duration = round(time.time() - start_time, 2)
     timestamp = datetime.datetime.now().strftime("%d %b %Y %I:%M %p")
 
-    # Final Summary (Unicorn line added)
+    # Final Summary (Vivo line added)
     summary = (
         f"🟢 *Croma:* {croma_count}/{croma_total}\n"
         f"🟣 *Flipkart:* {flip_count}/{flip_total}\n"
         f"🟡 *Amazon:* {amazon_count}/{amazon_total}\n"
         f"🦄 *Unicorn:* {unicorn_count}/{unicorn_total} (256GB)\n"
+        f"📱 *iQOO:* {iqoo_count}/{iqoo_total}\n"
+        f"🤳 *Vivo:* {vivo_count}/{vivo_total}\n"
         f"📦 *Total:* {len(in_stock)} available\n"
         f"🕒 *Checked:* {timestamp}\n"
         f"⏱ *Time taken:* {duration}s"

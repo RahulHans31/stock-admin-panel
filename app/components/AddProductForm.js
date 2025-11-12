@@ -29,7 +29,7 @@ export function AddProductForm({ addProductAction }) {
           type="text"
           name="url"
           // --- UPDATED PLACEHOLDER ---
-          placeholder="Paste Croma, Apple, or Amazon URL"
+          placeholder="Paste Croma, Apple, Amazon, Flipkart, iQOO, or Vivo URL"
           required
           value={url}
           onChange={(e) => setUrl(e.target.value)}

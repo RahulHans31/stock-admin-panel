@@ -77,9 +77,50 @@ function getProductDetails(url, partNumber) {
         partNumber: null 
       };
     }
+    
+    // --- IQOO LOGIC ---
+    if (parsedUrl.hostname.includes('iqoo.com')) {
+      // The product ID is the last path segment (ID after /product/)
+      const pathParts = parsedUrl.pathname.split('/').filter(part => part.length > 0);
+      const productSlug = pathParts[pathParts.length - 1]; 
+      
+      if (!productSlug) {
+        throw new Error('Could not find a product slug in the iQOO URL.');
+      }
+      
+      // Use the product slug as the identifier for the DB and a name in the list
+      return {
+        name: `(iQOO) ${productSlug}`, 
+        productId: productSlug, 
+        storeType: 'iqoo',
+        partNumber: null
+      };
+    }
+
+    // --- VIVO LOGIC ---
+    if (parsedUrl.hostname.includes('vivo.com')) {
+      // Vivo product ID is typically the number after /product/
+      const pathParts = parsedUrl.pathname.split('/').filter(part => part.length > 0);
+      const productIndex = pathParts.indexOf('product');
+      
+      if (productIndex === -1 || !pathParts[productIndex + 1]) {
+        throw new Error('Could not find a product ID in the Vivo URL after /product/.');
+      }
+      
+      const productId = pathParts[productIndex + 1].split('?')[0]; // Remove query params like skuId
+      const name = `Vivo Product ID ${productId}`;
+      
+      return {
+        name: name, 
+        productId: productId, 
+        storeType: 'vivo',
+        partNumber: null
+      };
+    }
+
 
     // --- UPDATED ERROR MESSAGE ---
-    throw new Error('Sorry, only Croma, Apple, Amazon, and Flipkart URLs are supported.');
+    throw new Error('Sorry, only Croma, Apple, Amazon, Flipkart, iQOO, and Vivo URLs are supported.');
   
   } catch (error) {
     return { error: error.message };
