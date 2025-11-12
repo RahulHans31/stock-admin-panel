@@ -1,6 +1,7 @@
 import os, json, requests, psycopg2, datetime, time
 from urllib.parse import urlparse, parse_qs
 from bs4 import BeautifulSoup
+from http.server import BaseHTTPRequestHandler
 
 # ==================================
 # 🔧 CONFIGURATION
