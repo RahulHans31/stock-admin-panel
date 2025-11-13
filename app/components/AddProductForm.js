@@ -6,28 +6,85 @@ import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 
 /**
+ * Extracts the Flipkart Product ID (pid) from the URL query parameters.
+ * @param {string} url 
+ * @returns {string | null} The pid or null if not found.
+ */
+function extractFlipkartProductId(url) {
+  try {
+    const parsedUrl = new URL(url);
+    // Flipkart IDs are reliably found in the 'pid' query parameter
+    return parsedUrl.searchParams.get('pid');
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Extracts the Amazon ASIN from the URL path.
+ * @param {string} url 
+ * @returns {string | null} The ASIN or null if not found.
+ */
+function extractAmazonAsin(url) {
+  try {
+    const parsedUrl = new URL(url);
+    // Matches /dp/ASIN/ or /gp/product/ASIN/
+    const match = parsedUrl.pathname.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+    return match ? match[1] : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Extracts the Croma Product ID (PID) from the URL path.
+ * @param {string} url 
+ * @returns {string | null} The numeric PID or null if not found.
+ */
+function extractCromaProductId(url) {
+  try {
+    const parsedUrl = new URL(url);
+    // PID is the last segment, and must be numeric. e.g. /product/123456
+    const pathParts = parsedUrl.pathname.split('/').filter(p => p.length > 0);
+    const lastSegment = pathParts[pathParts.length - 1];
+
+    // Check if the last segment looks like a numeric PID
+    if (lastSegment && /^\d+$/.test(lastSegment)) {
+      return lastSegment;
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+
+/**
  * Extracts the Apple Part Number from an Apple product URL.
- * It uses a more flexible regex to capture the part number, 
- * which is typically found after '/product/'.
  * @param {string} url 
  * @returns {string | null} The part number or null if not found.
  */
 function extractApplePartNumber(url) {
-  // FIXED REGEX: Matches /product/ followed by one or more characters that are NOT a slash or a question mark.
-  // This handles URLs like:
-  // - /product/MG6P4HN/A/some-name
-  // - /product/MG6P4HN/A?cid=...
-  // - /product/MG6P4HN/A (at the end of the path)
-  const match = url.match(/\/product\/([^/?]+)/i);
+  // Regex 1: The preferred pattern for finding the SKU after '/product/' (stops at / or ?)
+  let match = url.match(/\/product\/([^/?]+)/i);
   if (match && match[1]) {
-    // Return the captured group, which is the part number
     return match[1]; 
   }
+
+  // Regex 2: Fallback to find any alphanumeric pattern with a slash, common in Apple SKUs
+  match = url.match(/([A-Z0-9]{5,}[A-Z0-9]\/[A-Z0-9])/i);
+  if (match && match[1]) {
+    if (match[1].length > 7) { 
+        return match[1];
+    }
+  }
+  
   return null;
 }
 
+
 /**
- * Derives the storeType and checks if productId (Part Number) should be shown,
+ * Derives the storeType, determines if the ID field should be shown,
  * and extracts the part number if possible.
  * @param {string} url 
  * @returns {object} { storeType, showPartNumber, extractedPartNumber }
@@ -35,10 +92,28 @@ function extractApplePartNumber(url) {
 function getStoreDetails(url) {
   const lowerUrl = url.toLowerCase();
   
+  // --- Stores requiring client-side ID extraction (and thus showing the field) ---
   if (lowerUrl.includes('apple.com')) {
     const partNumber = extractApplePartNumber(lowerUrl);
     return { storeType: 'unicorn', showPartNumber: true, extractedPartNumber: partNumber };
   }
+  
+  if (lowerUrl.includes('flipkart.com')) {
+    const productId = extractFlipkartProductId(lowerUrl);
+    return { storeType: 'unknown', showPartNumber: true, extractedPartNumber: productId }; 
+  }
+
+  if (lowerUrl.includes('amazon.in')) {
+    const productId = extractAmazonAsin(lowerUrl);
+    return { storeType: 'unknown', showPartNumber: true, extractedPartNumber: productId }; 
+  }
+
+  if (lowerUrl.includes('croma.com')) {
+    const productId = extractCromaProductId(lowerUrl);
+    return { storeType: 'unknown', showPartNumber: true, extractedPartNumber: productId }; 
+  }
+  
+  // --- Stores relying ONLY on the URL (Server-side extraction/scraping). Field is HIDDEN. ---
   if (lowerUrl.includes('reliancedigital.in')) {
     return { storeType: 'reliance_digital', showPartNumber: false, extractedPartNumber: null };
   }
@@ -47,10 +122,6 @@ function getStoreDetails(url) {
   }
   if (lowerUrl.includes('vivo.com')) {
     return { storeType: 'vivo', showPartNumber: false, extractedPartNumber: null };
-  }
-  // For Croma or Flipkart/Amazon, we generally need the explicit ID for API lookups.
-  if (lowerUrl.includes('croma.com') || lowerUrl.includes('flipkart.com') || lowerUrl.includes('amazon.in')) {
-    return { storeType: 'unknown', showPartNumber: true, extractedPartNumber: null }; 
   }
 
   // Default fallback or general case
@@ -61,48 +132,47 @@ function getStoreDetails(url) {
 export function AddProductForm({ addProductAction }) {
   const formRef = useRef(null);
   const [url, setUrl] = useState('');
-  // New state to hold the product ID/part number
+  // State to hold the product ID/part number
   const [productId, setProductId] = useState(''); 
   
-  // Use the derived details
+  // Derived details
   const { storeType, showPartNumber, extractedPartNumber } = getStoreDetails(url);
 
-  // --- NEW useEffect hook to handle auto-population ---
+  // Auto-population logic
   useEffect(() => {
-    // 1. If a part number was successfully extracted, set it. This auto-fills for Apple.
+    // 1. If an ID was successfully extracted for any supported store, set it.
     if (extractedPartNumber) {
       setProductId(extractedPartNumber);
-      // Exit early to prevent other rules from running
       return; 
     }
     
-    // 2. If the URL field is empty (user cleared it), clear the Part ID field.
-    if (!url) {
+    // 2. If the URL field is empty OR if the ID field should be hidden entirely, clear the state.
+    if (!url || !showPartNumber) {
         setProductId('');
         return;
     }
     
-    // 3. If the field is shown but it's NOT an Apple store (i.e., Croma/Flipkart/Amazon), 
-    //    we should NOT clear the productId, as the user might be manually typing it in.
-    //    We only clear it if the input field is now supposed to be hidden entirely.
-    if (!showPartNumber) {
-      setProductId('');
-    }
-    // Note: If showPartNumber is true and extractedPartNumber is null (e.g., Croma URL),
-    // we do nothing here, preserving any manual input from the user.
-    
-  }, [url, extractedPartNumber, showPartNumber]); // Rerun when URL or derived details change
-  // ---------------------------------------------------
+    // 3. If extraction failed for a store where the field is shown (shouldn't happen with the new logic, 
+    //    but preserves manual input if an invalid URL for an otherwise supported store is pasted).
+    //    We explicitly do nothing here, leaving the field blank for the user to paste a better URL.
+
+  }, [url, extractedPartNumber, showPartNumber]); 
 
 
   async function formAction(formData) {
     // Manually append the determined storeType
     formData.append('storeType', storeType);
     
-    // Manually append the productId/partNumber state value
-    if (productId && showPartNumber) {
-      formData.append('productId', productId);
+    // Manually append the productId/partNumber state value.
+    // This is only relevant for the stores where showPartNumber is TRUE (Apple, Flipkart, Amazon, Croma)
+    if (showPartNumber && productId) {
+        // Send under both names to cover validation ('partNumber') and Prisma schema ('productId')
+        formData.append('partNumber', productId);
+        formData.append('productId', productId);
     }
+    
+    // For Reliance Digital, Vivo, iQOO (where showPartNumber is FALSE), only the URL and storeType are sent.
+    // actions.js uses the URL to extract the ID on the server for these stores.
 
     const result = await addProductAction(formData);
     
@@ -111,8 +181,8 @@ export function AddProductForm({ addProductAction }) {
     } else {
       toast.success("Product added to tracker!");
       formRef.current?.reset();
-      setUrl(''); // Clear URL state after successful submission
-      setProductId(''); // Clear productId state
+      setUrl(''); 
+      setProductId(''); 
     }
   }
 
@@ -136,15 +206,16 @@ export function AddProductForm({ addProductAction }) {
         <Button type="submit">Add Product</Button>
       </div>
       
-      {/* Product ID Input Field (Shown for Apple, Croma, Flipkart, Amazon) */}
+      {/* Product ID Input Field. Hidden for stores with server-side extraction (RD, Vivo, iQOO). 
+          For all others, it's shown and auto-populated if a valid ID is found. */}
       {showPartNumber && (
         <Input
           type="text"
-          name="productIdManual" // Use a temporary name for the controlled input field
-          value={productId} // Value is controlled by React state
-          onChange={(e) => setProductId(e.target.value)} // Allows manual input/editing
-          placeholder={storeType === 'unicorn' ? "Apple Part Number (e.g., MG6P4HN/A)" : "Product ID (Required for this store)"}
-          required={storeType !== 'unicorn'} 
+          name="partNumber" 
+          value={productId} 
+          onChange={(e) => setProductId(e.target.value)} 
+          placeholder={storeType === 'unicorn' ? "Apple Part Number (e.g., MG6P4HN/A)" : "Product ID (Extracted from URL)"}
+          required 
           className="transition-all duration-300"
         />
       )}
