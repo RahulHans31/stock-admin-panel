@@ -1,21 +1,26 @@
 'use client';
 
-import { useRef, useState, useEffect } from 'react'; // Added useEffect
+import { useRef, useState, useEffect } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 
 /**
  * Extracts the Apple Part Number from an Apple product URL.
- * Example URL segment: /product/MG6P4HN/A/some-name
+ * It uses a more flexible regex to capture the part number, 
+ * which is typically found after '/product/'.
  * @param {string} url 
  * @returns {string | null} The part number or null if not found.
  */
 function extractApplePartNumber(url) {
-  // Regex to find a pattern like /product/PART_NUMBER/
-  const match = url.match(/\/product\/([A-Z0-9\/]+)\//i);
+  // FIXED REGEX: Matches /product/ followed by one or more characters that are NOT a slash or a question mark.
+  // This handles URLs like:
+  // - /product/MG6P4HN/A/some-name
+  // - /product/MG6P4HN/A?cid=...
+  // - /product/MG6P4HN/A (at the end of the path)
+  const match = url.match(/\/product\/([^/?]+)/i);
   if (match && match[1]) {
-    // The part number is the first captured group (e.g., MG6P4HN/A)
+    // Return the captured group, which is the part number
     return match[1]; 
   }
   return null;
@@ -32,15 +37,19 @@ function getStoreDetails(url) {
   
   if (lowerUrl.includes('apple.com')) {
     const partNumber = extractApplePartNumber(lowerUrl);
-    // Pass the extracted part number back
     return { storeType: 'unicorn', showPartNumber: true, extractedPartNumber: partNumber };
   }
   if (lowerUrl.includes('reliancedigital.in')) {
     return { storeType: 'reliance_digital', showPartNumber: false, extractedPartNumber: null };
   }
-  // ... other stores ...
+  if (lowerUrl.includes('iqoo.com')) {
+    return { storeType: 'iqoo', showPartNumber: false, extractedPartNumber: null };
+  }
+  if (lowerUrl.includes('vivo.com')) {
+    return { storeType: 'vivo', showPartNumber: false, extractedPartNumber: null };
+  }
+  // For Croma or Flipkart/Amazon, we generally need the explicit ID for API lookups.
   if (lowerUrl.includes('croma.com') || lowerUrl.includes('flipkart.com') || lowerUrl.includes('amazon.in')) {
-    // Show the product ID field for manual entry (no automatic extraction here)
     return { storeType: 'unknown', showPartNumber: true, extractedPartNumber: null }; 
   }
 
@@ -52,26 +61,37 @@ function getStoreDetails(url) {
 export function AddProductForm({ addProductAction }) {
   const formRef = useRef(null);
   const [url, setUrl] = useState('');
-  // New state to hold the product ID/part number, which can be extracted or manually entered
+  // New state to hold the product ID/part number
   const [productId, setProductId] = useState(''); 
   
-  // Use the new derived details
+  // Use the derived details
   const { storeType, showPartNumber, extractedPartNumber } = getStoreDetails(url);
 
   // --- NEW useEffect hook to handle auto-population ---
   useEffect(() => {
-    // If a part number was extracted from the URL, set it as the default productId
+    // 1. If a part number was successfully extracted, set it. This auto-fills for Apple.
     if (extractedPartNumber) {
       setProductId(extractedPartNumber);
-    } else if (storeType !== 'unicorn' && showPartNumber) {
-      // If the field is shown but it's not an Apple store, clear the productId 
-      // state since extraction is only for Apple right now, requiring manual entry for others.
-      setProductId('');
-    } else if (!showPartNumber) {
-        // Clear if the input field is hidden entirely
-        setProductId('');
+      // Exit early to prevent other rules from running
+      return; 
     }
-  }, [url, extractedPartNumber, storeType, showPartNumber]); // Rerun when URL or derived details change
+    
+    // 2. If the URL field is empty (user cleared it), clear the Part ID field.
+    if (!url) {
+        setProductId('');
+        return;
+    }
+    
+    // 3. If the field is shown but it's NOT an Apple store (i.e., Croma/Flipkart/Amazon), 
+    //    we should NOT clear the productId, as the user might be manually typing it in.
+    //    We only clear it if the input field is now supposed to be hidden entirely.
+    if (!showPartNumber) {
+      setProductId('');
+    }
+    // Note: If showPartNumber is true and extractedPartNumber is null (e.g., Croma URL),
+    // we do nothing here, preserving any manual input from the user.
+    
+  }, [url, extractedPartNumber, showPartNumber]); // Rerun when URL or derived details change
   // ---------------------------------------------------
 
 
@@ -79,9 +99,9 @@ export function AddProductForm({ addProductAction }) {
     // Manually append the determined storeType
     formData.append('storeType', storeType);
     
-    // Manually append the productId/partNumber state value since we control its value now
+    // Manually append the productId/partNumber state value
     if (productId && showPartNumber) {
-        formData.append('productId', productId);
+      formData.append('productId', productId);
     }
 
     const result = await addProductAction(formData);
@@ -116,21 +136,18 @@ export function AddProductForm({ addProductAction }) {
         <Button type="submit">Add Product</Button>
       </div>
       
+      {/* Product ID Input Field (Shown for Apple, Croma, Flipkart, Amazon) */}
       {showPartNumber && (
         <Input
           type="text"
-          name="productIdManual" // Use a different name for the controlled input field to avoid conflict
-          // Use the state value and update the state on change
-          value={productId} 
-          onChange={(e) => setProductId(e.target.value)}
+          name="productIdManual" // Use a temporary name for the controlled input field
+          value={productId} // Value is controlled by React state
+          onChange={(e) => setProductId(e.target.value)} // Allows manual input/editing
           placeholder={storeType === 'unicorn' ? "Apple Part Number (e.g., MG6P4HN/A)" : "Product ID (Required for this store)"}
-          // The required prop is now handled by checking the state value in formAction 
           required={storeType !== 'unicorn'} 
           className="transition-all duration-300"
         />
       )}
-      
-      {/* Remove the hidden storeType input as it's appended in formAction */}
       
       {/* Affiliate Link */}
       <Input
