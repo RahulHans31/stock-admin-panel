@@ -19,6 +19,7 @@ CRON_SECRET = os.getenv("CRON_SECRET")
 # Flipkart Proxy (AlwaysData)
 FLIPKART_PROXY_URL = "https://rknldeals.alwaysdata.net/flipkart_check"
 
+
 # ==================================
 # 🧠 VERCEL HANDLER
 # ==================================
@@ -73,9 +74,9 @@ class handler(BaseHTTPRequestHandler):
 def get_products_from_db():
     print("[info] Connecting to database...")
     # NOTE: psycopg2 should be installed if running this locally: pip install psycopg2-binary
-    # This line assumes DATABASE_URL is set in environment variables (Vercel/hosting environment).
     conn = psycopg2.connect(DATABASE_URL) 
     cursor = conn.cursor()
+    # Ensure the query selects all necessary columns, including affiliate_link
     cursor.execute("SELECT name, url, product_id, store_type, affiliate_link FROM products")
     products = cursor.fetchall()
     conn.close()
@@ -174,7 +175,7 @@ def check_unicorn():
             sku = product_data.get("sku", "N/A")
             
             # Use the main product page URL for linking
-            product_url = "https://shop.unicornstore.in/type/iphone-17" 
+            product_url = "https://shop.unicornstore.in/iphone-17" 
             
             if int(quantity) > 0:
                 print(f"[UNICORN] ✅ {variant_name} is IN STOCK ({quantity} units)")
@@ -250,7 +251,7 @@ def check_croma(product, pincode):
 # ==================================
 # 🟣 FLIPKART VIA PROXY
 # ==================================
-def check_flipkart(product, pincode): 
+def check_flipkart(product, pincode="132001"):
     """Call Flipkart via AlwaysData proxy."""
     try:
         payload = {"productId": product["productId"], "pincode": pincode}
@@ -347,14 +348,107 @@ def check_amazon(product):
         return None
 
 # ==================================
-# 📱 IQOO HTML PARSER CHECKER
+# 🌐 RELIANCE DIGITAL API CHECKER (MODIFIED TO USE DB ID)
+# ==================================
+def check_reliance_digital(product, pincode):
+    """
+    Check stock availability for a Reliance Digital product by querying the 
+    inventory API directly using the internal 'article_id' (now stored in productId).
+    """
+    name = product["name"]
+    url = product["url"]
+    # The 'productId' now contains the **internal Article ID** (e.g., '493839312')
+    article_id = product["productId"] 
+    
+    if not article_id:
+        print(f"[RD] ❌ Cannot check {name}: Missing internal Article ID.")
+        return None
+
+    # ----------------------------------------
+    # STEP 2: Check Stock using the Article ID
+    # ----------------------------------------
+    print(f"[RD] Checking stock: {name} (ID: {article_id}) for Pincode {pincode}")
+
+    inventory_url = "https://www.reliancedigital.in/ext/raven-api/inventory/multi/articles-v2"
+    
+    inventory_headers = {
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+        "origin": "https://www.reliancedigital.in",
+        "referer": "https://www.reliancedigital.in/",
+    }
+
+    # API Payload 
+    payload = {
+        "articles": [
+            {
+                "article_id": str(article_id),
+                "custom_json": {}, 
+                "quantity": 1
+            }
+        ],
+        "phone_number": "0",
+        "pincode": str(pincode),
+        "request_page": "pdp"
+    }
+
+    try:
+        res = requests.post(inventory_url, headers=inventory_headers, json=payload, timeout=20)
+        res.raise_for_status() 
+        data = res.json()
+        
+        article_data = data.get("data", {}).get("articles", [])
+        if not article_data:
+            return None
+
+        article = article_data[0]
+        
+        # Determine stock status: Available if there is NO meaningful error type
+        article_error = article.get("error", {})
+        error_type = article_error.get("type")
+        
+        is_in_stock = not (error_type and error_type in ["OutOfStockError", "FaultyArticleError"])
+        
+        # Try to extract price from the product page using BS (fallback)
+        price = None
+        try:
+            res_html = requests.get(url, headers=inventory_headers, timeout=10)
+            soup = BeautifulSoup(res_html.text, "html.parser")
+            price_el = soup.select_one('.pdpPrice, .product-price .amount, .final-price, [class*="Price"]')
+            if price_el:
+                # Clean up the price string
+                price = price_el.get_text(strip=True).replace('\n', ' ').replace('₹', '').strip() 
+        except Exception:
+            pass 
+
+        if is_in_stock:
+            print(f"[RD] ✅ {name} is IN STOCK at {pincode}.")
+            return (
+                f"✅ *Reliance Digital*\n"
+                f"[{name}]({product['affiliateLink'] or url})"
+                + (f"\n💰 Price: ₹{price}" if price else "")
+            )
+        else:
+            error_message = article_error.get("message", "Stock Error")
+            print(f"[RD] ❌ {name} is UNAVAILABLE at {pincode}. (Error: {error_message})")
+            return None
+
+    except requests.exceptions.RequestException as e:
+        print(f"[error] Reliance Digital inventory check failed for {name}: {e}")
+        return None
+    except Exception as e:
+        print(f"[error] Reliance Digital check failed for {name} (general): {e}")
+        return None
+
+# ==================================
+# 📱 IQOO HTML PARSER CHECKER (MODIFIED)
 # ==================================
 def check_iqoo(product):
     """Check stock availability for an iQOO product by scraping its product page."""
     url = product["url"]
     print(f"[IQOO] Checking: {url}")
 
-    # Use a standard browser header/user-agent
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -365,61 +459,62 @@ def check_iqoo(product):
 
     try:
         res = requests.get(url, headers=headers, timeout=20)
-        # res.raise_for_status() # Don't raise for client errors, just check content
         html = res.text
         soup = BeautifulSoup(html, "html.parser")
 
-        # --- KEY SCRAPING LOGIC ---
-        # Look for the "Buy Now" button or stock status indicators
-        buy_now_button = soup.select_one('button:contains("Buy Now"), a:contains("Buy Now")')
-        stock_status = soup.select_one('.stock-status, .inventory-status') 
+        # --- EXTRACT NAME from <title> or fallback ---
+        page_title = soup.find('title')
+        product_name = page_title.get_text(strip=True).split('|')[0].strip() if page_title else product["name"]
         
-        availability_text = ""
-        is_available = False
-
+        # --- KEY SCRAPING LOGIC ---
+        buy_now_button = soup.select_one('button:contains("Buy Now"), a:contains("Buy Now")')
+        out_of_stock_phrases = ["out of stock", "currently unavailable", "notify me"]
+        page_text = soup.get_text().lower()
+        
+        is_available = True
+        availability_text = "Status indeterminate."
+        
         if buy_now_button:
-            # Check if the button is active (not disabled or styled as out-of-stock)
-            button_classes = buy_now_button.get('class', [])
-            # Look for common disabled attributes/classes
-            is_disabled = buy_now_button.get('disabled') or 'disabled' in button_classes or 'out-of-stock' in button_classes
+            is_disabled = buy_now_button.get('disabled') or 'disabled' in buy_now_button.get('class', []) or 'out-of-stock' in buy_now_button.get('class', [])
             
-            if not is_disabled:
-                is_available = True
-            
-            availability_text = f"Buy Now button found. Disabled: {is_disabled}"
-            
-        elif stock_status:
-            # Check for specific stock messages
-            availability_text = stock_status.get_text(strip=True).lower()
-            if "in stock" in availability_text or "available" in availability_text:
-                 is_available = True
-                 
-        else:
-            # Fallback check: Look for a common out-of-stock phrase if no clear button/status is found
-            out_of_stock_phrases = ["out of stock", "currently unavailable", "notify me"]
-            page_text = soup.get_text().lower()
-            
-            if not any(phrase in page_text for phrase in out_of_stock_phrases):
-                 # If we can't find an explicit "out of stock" message, assume available
-                 is_available = True
-                 availability_text = "No explicit 'out of stock' message found on page."
+            if is_disabled:
+                is_available = False
+                availability_text = "Buy Now button disabled/out-of-stock class found."
             else:
-                 availability_text = "Explicit 'out of stock' phrase found in page text."
+                is_available = True
+                availability_text = "Active Buy Now button found."
+        
+        if not is_available and any(phrase in page_text for phrase in out_of_stock_phrases):
+             is_available = False
+             availability_text = "Explicit 'out of stock' phrase found in page text."
+             
+        if not buy_now_button and any(phrase in page_text for phrase in out_of_stock_phrases):
+             is_available = False
+             availability_text = "No clear button, but OOS text found."
 
-        # Try to find a price for reporting
+        # --- EXTRACT PRICE AND OFFERS ---
         price_el = soup.select_one('.price-tag, .product-price, .current_price, .selling-price')
         price = price_el.get_text(strip=True) if price_el else None
+        
+        offer_el = soup.select_one('.product-offers, .discount-details, .emi-details')
+        offers = offer_el.get_text(strip=True) if offer_el else None
+        
+        price_info = ""
+        if price:
+            price_info += f"\n💰 Price: {price}"
+        if offers and len(offers) < 150: # Avoid scraping huge blocks of text
+             price_info += f"\n🎁 Offers: {offers}"
 
 
         if is_available:
-            print(f"[IQOO] ✅ {product['name']} is available.")
+            print(f"[IQOO] ✅ {product_name} is available.")
             return (
                 f"✅ *iQOO*\n"
-                f"[{product['name']}]({product['affiliateLink'] or url})"
-                + (f"\n💰 Price: {price}" if price else "")
+                f"[{product_name}]({product['affiliateLink'] or url})"
+                f"{price_info}"
             )
         else:
-            print(f"[IQOO] ❌ {product['name']} appears unavailable. ({availability_text})")
+            print(f"[IQOO] ❌ {product_name} appears unavailable. ({availability_text})")
             return None
 
     except Exception as e:
@@ -427,16 +522,15 @@ def check_iqoo(product):
         return None
 
 # ==================================
-# 🤳 VIVO HTML PARSER CHECKER
+# 🤳 VIVO HTML PARSER CHECKER (MODIFIED)
 # ==================================
 def check_vivo(product):
     """
     Check stock availability for a Vivo product by scraping its product page.
-    This function looks for common "Buy Now" or "Out of Stock" indicators based on test script results.
     """
     url = product["url"]
-    name = product["name"]
-    print(f"[VIVO] Checking: {name} at {url}")
+    original_name = product["name"]
+    print(f"[VIVO] Checking: {original_name} at {url}")
 
     headers = {
         "User-Agent": (
@@ -452,58 +546,67 @@ def check_vivo(product):
         html = res.text
         soup = BeautifulSoup(html, "html.parser")
 
+        # --- EXTRACT NAME from <title> or fallback ---
+        page_title = soup.find('title')
+        product_name = page_title.get_text(strip=True).split('|')[0].strip() if page_title else original_name
+
         # --- KEY SCRAPING LOGIC ---
-        # 1. Look for the main 'Buy Now' button/link. The active link selector observed in the test script: 'a.buyNow'
-        buy_now_link = soup.select_one('a.buyNow')
-        
-        # 2. Look for explicit 'Out of Stock' phrases.
+        buy_now_link = soup.select_one('a.buyNow, .addToCart, .buyButton')
         out_of_stock_phrases = ["out of stock", "notify me", "currently unavailable"]
         page_text_lower = soup.get_text().lower()
-        is_explicitly_oos = any(phrase in page_text_lower for phrase in out_of_stock_phrases)
-
-        is_available = False
+        
+        is_available = True
         availability_text = "Status indeterminate."
 
-        if buy_now_link and 'disabled' not in buy_now_link.get('class', []):
-            is_available = True
-            availability_text = f"Active 'Buy Now' link found."
-
-        elif is_explicitly_oos:
-            is_available = False
-            availability_text = "Explicit 'out of stock' phrase found in page text."
-
-        else:
-            # Fallback: If no clear stock status, check for the presence of the main button.
-            # If the key interaction element is present and no OOS text is found, assume available.
-            if buy_now_link:
-                is_available = True
-                availability_text = "Buy Now link found, status inconclusive via text."
+        if buy_now_link:
+            is_disabled = 'disabled' in buy_now_link.get('class', [])
+            
+            if is_disabled:
+                is_available = False
+                availability_text = f"Buy Now link found but disabled."
             else:
-                 is_available = False
-                 availability_text = "No active Buy Now link found."
+                is_available = True
+                availability_text = f"Active Buy Now link found."
+        
+        if not is_available and any(phrase in page_text_lower for phrase in out_of_stock_phrases):
+             is_available = False
+             availability_text = "Explicit 'out of stock' phrase found in page text."
+             
+        if not buy_now_link and any(phrase in page_text_lower for phrase in out_of_stock_phrases):
+             is_available = False
+             availability_text = "No active Buy Now link found."
 
-        # Try to find a price for reporting
+        # --- EXTRACT PRICE AND OFFERS ---
         price_el = soup.select_one('.price-tag, .product-price, .current_price, .selling-price, .js-final-price')
         price = price_el.get_text(strip=True) if price_el else None
+        
+        offer_el = soup.select_one('.product-offers, .discount-details, .emi-details')
+        offers = offer_el.get_text(strip=True) if offer_el else None
+        
+        price_info = ""
+        if price:
+            price_info += f"\n💰 Price: {price}"
+        if offers and len(offers) < 150: # Avoid scraping huge blocks of text
+             price_info += f"\n🎁 Offers: {offers}"
 
 
         if is_available:
-            print(f"[VIVO] ✅ {name} is available.")
+            print(f"[VIVO] ✅ {product_name} is available.")
             return (
                 f"✅ *Vivo*\n"
-                f"[{name}]({product['affiliateLink'] or url})"
-                + (f"\n💰 Price: {price}" if price else "")
+                f"[{product_name}]({product['affiliateLink'] or url})"
+                f"{price_info}"
             )
         else:
-            print(f"[VIVO] ❌ {name} appears unavailable. ({availability_text})")
+            print(f"[VIVO] ❌ {product_name} appears unavailable. ({availability_text})")
             return None
 
     except Exception as e:
-        print(f"[error] Vivo check failed for {name}: {e}")
+        print(f"[error] Vivo check failed for {original_name}: {e}")
         return None
 
 # ==================================
-# 🚀 MAIN LOGIC (MODIFIED to include Unicorn, iQOO, and Vivo)
+# 🚀 MAIN LOGIC
 # ==================================
 def main_logic():
     start_time = time.time()
@@ -511,12 +614,12 @@ def main_logic():
     products = get_products_from_db()
     in_stock = []
     
-    # Initialize all counters, including Unicorn, iQOO, and Vivo
-    croma_count = flip_count = amazon_count = unicorn_count = iqoo_count = vivo_count = 0
-    croma_total = flip_total = amazon_total = unicorn_total = iqoo_total = vivo_total = 0
+    # Initialize all counters, including Reliance Digital (RD)
+    croma_count = flip_count = amazon_count = unicorn_count = iqoo_count = vivo_count = rd_count = 0
+    croma_total = flip_total = amazon_total = unicorn_total = iqoo_total = vivo_total = rd_total = 0
 
     # ----------------------------------------------------
-    # NEW: Check Unicorn stock separately for iPhone 17 variants
+    # Check Unicorn stock separately for iPhone 17 variants
     # ----------------------------------------------------
     unicorn_results = check_unicorn()
     # We checked 5 variants total (all are 256GB)
@@ -526,7 +629,7 @@ def main_logic():
         in_stock.extend(unicorn_results)
     
     # ----------------------------------------------------
-    # EXISTING: Loop through DB products
+    # Loop through DB products
     # ----------------------------------------------------
     for product in products:
         result = None
@@ -558,17 +661,28 @@ def main_logic():
             if result:
                 iqoo_count += 1
                 in_stock.append(result)
-        elif product["storeType"] == "vivo": # <-- VIVO CHECK ADDED
+        elif product["storeType"] == "vivo":
             vivo_total += 1
             result = check_vivo(product)
             if result:
                 vivo_count += 1
                 in_stock.append(result)
+        elif product["storeType"] == "reliance_digital":
+            rd_total += 1
+            # Check RD against all pincodes until a hit is found
+            for pincode in PINCODES_TO_CHECK:
+                # The product['productId'] now contains the internal Article ID
+                result = check_reliance_digital(product, pincode)
+                if result:
+                    rd_count += 1
+                    in_stock.append(result)
+                    break
+
 
     duration = round(time.time() - start_time, 2)
     timestamp = datetime.datetime.now().strftime("%d %b %Y %I:%M %p")
 
-    # Final Summary (Vivo line added)
+    # Final Summary (Vivo, iQOO, and RD lines added)
     summary = (
         f"🟢 *Croma:* {croma_count}/{croma_total}\n"
         f"🟣 *Flipkart:* {flip_count}/{flip_total}\n"
@@ -576,6 +690,7 @@ def main_logic():
         f"🦄 *Unicorn:* {unicorn_count}/{unicorn_total} (256GB)\n"
         f"📱 *iQOO:* {iqoo_count}/{iqoo_total}\n"
         f"🤳 *Vivo:* {vivo_count}/{vivo_total}\n"
+        f"🌐 *R. Digital:* {rd_count}/{rd_total}\n"
         f"📦 *Total:* {len(in_stock)} available\n"
         f"🕒 *Checked:* {timestamp}\n"
         f"⏱ *Time taken:* {duration}s"

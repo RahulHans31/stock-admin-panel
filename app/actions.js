@@ -1,10 +1,67 @@
 'use server';
 
+import * as cheerio from 'cheerio';
 import { prisma } from '@/lib/prisma';
 import { revalidatePath } from 'next/cache';
 
+/**
+ * Fetches the Reliance Digital product page and scrapes the internal Article ID (Item Code).
+ * This replaces the need for the Python scraper in this case.
+ * @param {string} url - The full Reliance Digital product URL.
+ * @returns {Promise<string|null>} The internal 9-digit Article ID string or null.
+ */
+async function getRelianceDigitalArticleId(url) {
+    try {
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                // Using a mobile-like user agent to ensure correct page structure is received
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36',
+            },
+        });
+
+        if (!response.ok) {
+            console.error(`[RD Scraper] HTTP error fetching ${url}: ${response.status}`);
+            return null;
+        }
+
+        const html = await response.text();
+        const $ = cheerio.load(html);
+
+        let articleId = null;
+
+        // 1. Target the <li> in the specifications section that lists "Item Code"
+        $('li.specifications-list').each((i, el) => {
+            const label = $(el).find('span:first-child').text().trim();
+            if (label === 'Item Code') {
+                // The value is nested inside the span with class 'specifications-list--right' and then within a <ul>
+                articleId = $(el).find('.specifications-list--right ul').text().trim();
+                return false; // Stop the loop once the ID is found
+            }
+        });
+
+        // 2. Fallback: Check the og:image URL in metadata (less reliable but often present)
+        if (!articleId) {
+            const imageMeta = $('meta[property="og:image"]').attr('content');
+            if (imageMeta) {
+                // Use regex to find the 9-digit number right before '-i-1' in the filename
+                const match = imageMeta.match(/-(\d{9})-i-1/);
+                if (match) {
+                    articleId = match[1];
+                }
+            }
+        }
+
+        return articleId;
+    } catch (error) {
+        console.error("[RD Scraper] Scraping failed:", error.message);
+        return null;
+    }
+}
+
+
 // This function parses the URL you paste in
-function getProductDetails(url, partNumber) {
+async function getProductDetails(url, partNumber) {
   try {
     const parsedUrl = new URL(url);
 
@@ -117,7 +174,28 @@ function getProductDetails(url, partNumber) {
         partNumber: null
       };
     }
+    if (parsedUrl.hostname.includes('reliancedigital.in')) {
+            // 1. SCALING ACTION: Scrape the actual internal Article ID
+            const internalArticleId = await getRelianceDigitalArticleId(url);
+            
+            if (!internalArticleId) {
+                throw new Error('Could not extract the internal Item Code from the Reliance Digital page.');
+            }
 
+            // 2. Extract slug and name for database
+            const pathParts = parsedUrl.pathname.split('/').filter(p => p.length > 0);
+            const slug = pathParts[pathParts.length - 1]; 
+            const nameBase = pathParts.length > 1 ? pathParts[pathParts.length - 2] : slug;
+            const name = nameBase.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase()).slice(0, 50) + '...';
+
+            return { 
+                name: `(R. Digital) ${name}`, 
+                // Store the actual scraped internal Article ID for API tracking
+                productId: internalArticleId, 
+                storeType: 'reliance_digital', 
+                partNumber: slug 
+            };
+        }
 
     // --- UPDATED ERROR MESSAGE ---
     throw new Error('Sorry, only Croma, Apple, Amazon, Flipkart, iQOO, and Vivo URLs are supported.');
