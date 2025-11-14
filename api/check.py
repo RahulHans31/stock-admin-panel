@@ -23,6 +23,13 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 FLIPKART_PROXY_URL = "https://rknldeals.alwaysdata.net/flipkart_check"
 CRON_SECRET = os.getenv("CRON_SECRET")
 
+# Map for easy summary creation and alert formatting
+STORE_EMOJIS = {
+    "croma": "🟢", "flipkart": "🟣", "amazon": "🟡", 
+    "unicorn": "🦄", "iqoo": "📱", "vivo": "🤳", 
+    "reliance_digital": "🌐"
+}
+
 
 # ==================================
 # 🪵 LOGGING & TELEGRAM UTILITIES
@@ -100,6 +107,7 @@ def send_log_file_telegram(log_content):
 # ==================================
 def get_products_from_db():
     log_print("[info] Connecting to database...")
+    # NOTE: psycopg2 should be installed if running this locally: pip install psycopg2-binary
     conn = psycopg2.connect(DATABASE_URL) 
     cursor = conn.cursor()
     cursor.execute("SELECT name, url, product_id, store_type, affiliate_link FROM products")
@@ -120,12 +128,13 @@ def get_products_from_db():
     return products_list
 
 # ==================================
-# 🛒 STORE CHECKERS - RETURN LIST OF MESSAGES
+# 🛒 STORE CHECKERS - RETURN FORMATTED MESSAGE STRING OR None
 # ==================================
 
-# --- Unicorn Checker ---
-def check_unicorn():
-    """Checks stock for all iPhone 17 (256GB) variants at Unicorn Store."""
+# --- Unicorn Checker (Product by Product logic is inside the parent caller) ---
+def check_unicorn_product(color_name, color_id, storage_id):
+    """Checks stock for a single iPhone 17 (256GB) variant at Unicorn Store."""
+    
     BASE_URL = "https://fe01.beamcommerce.in/get_product_by_option_id"
     HEADERS = {
         "accept": "application/json, text/plain, */*",
@@ -135,60 +144,48 @@ def check_unicorn():
         "referer": "https://shop.unicornstore.in/",
     }
     
+    # Fixed product attributes for iPhone 17 (Category 456)
     CATEGORY_ID = "456" 
     FAMILY_ID = "94"
     GROUP_IDS = "57,58"
-    STORAGE_256GB_ID = "250" # 256GB Option ID 
-
-    COLOR_VARIANTS = {
-        "Lavender": "313",
-        "Sage": "311",
-        "Mist Blue": "312",
-        "White": "314",
-        "Black": "315",
+    
+    variant_name = f"iPhone 17 {color_name} 256GB"
+    
+    payload = {
+        "category_id": CATEGORY_ID,
+        "family_id": FAMILY_ID,
+        "group_ids": GROUP_IDS,
+        "option_ids": f"{color_id},{storage_id}"
     }
-    
-    available_messages = []
-    
-    for color_name, color_id in COLOR_VARIANTS.items():
-        variant_name = f"iPhone 17 {color_name} 256GB"
+
+    try:
+        res = requests.post(BASE_URL, headers=HEADERS, json=payload, timeout=10)
+        res.raise_for_status()
+        data = res.json()
         
-        payload = {
-            "category_id": CATEGORY_ID,
-            "family_id": FAMILY_ID,
-            "group_ids": GROUP_IDS,
-            "option_ids": f"{color_id},{STORAGE_256GB_ID}"
-        }
-
-        try:
-            res = requests.post(BASE_URL, headers=HEADERS, json=payload, timeout=10)
-            res.raise_for_status()
-            data = res.json()
+        product_data = data.get("data", {}).get("product", {})
+        quantity = product_data.get("quantity", 0)
+        
+        price = f"₹{int(product_data.get('price', 0)):,}" if product_data.get('price') else "N/A"
+        sku = product_data.get("sku", "N/A")
+        product_url = "https://shop.unicornstore.in/iphone-17" 
+        
+        if int(quantity) > 0:
+            log_print(f"[UNICORN] ✅ {variant_name} is IN STOCK ({quantity} units)")
+            return (
+                f"[{variant_name} - {sku}]({product_url})"
+                f"\n💰 Price: {price}, Qty: {quantity}"
+            )
+        else:
+            dispatch_note = product_data.get("custom_column_4", "Out of Stock").strip()
+            log_print(f"[UNICORN] ❌ {variant_name} unavailable: {dispatch_note}")
             
-            product_data = data.get("data", {}).get("product", {})
-            quantity = product_data.get("quantity", 0)
-            
-            price = f"₹{int(product_data.get('price', 0)):,}" if product_data.get('price') else "N/A"
-            sku = product_data.get("sku", "N/A")
-            product_url = "https://shop.unicornstore.in/iphone-17" 
-            
-            if int(quantity) > 0:
-                log_print(f"[UNICORN] ✅ {variant_name} is IN STOCK ({quantity} units)")
-                message = (
-                    f"[{variant_name} - {sku}]({product_url})"
-                    f"\n💰 Price: {price}, Qty: {quantity}"
-                )
-                available_messages.append(message)
-            else:
-                dispatch_note = product_data.get("custom_column_4", "Out of Stock").strip()
-                log_print(f"[UNICORN] ❌ {variant_name} unavailable: {dispatch_note}")
-                
-        except Exception as e:
-            log_print(f"[error] Unicorn check failed for {variant_name}: {e}")
+    except Exception as e:
+        log_print(f"[error] Unicorn check failed for {variant_name}: {e}")
     
-    return {"total": len(COLOR_VARIANTS), "found": len(available_messages), "messages": available_messages}
+    return None
 
-# --- Croma Checker (single check for simplicity) ---
+# --- Croma Checker ---
 def check_croma_product(product, pincode):
     """Checks stock for a single Croma product at one pincode."""
     url = "https://api.croma.com/inventory/oms/v2/tms/details-pwa/"
@@ -212,7 +209,6 @@ def check_croma_product(product, pincode):
             },
         }
     }
-    # NOTE: You may need to update the subscription key over time if it expires.
     headers = {
         "accept": "application/json",
         "content-type": "application/json",
@@ -586,14 +582,15 @@ STORE_CHECKERS_MAP = {
 # Helper wrapper for concurrent execution of DB-tracked products
 def check_store_products(store_type, products_to_check, pincodes):
     """
-    Checks all products of a specific store type, handling multi-pincode logic.
-    Returns a dict with total, found count, and a list of formatted messages.
+    Checks all products of a specific store type, running inner checks sequentially.
+    If stock is found, it sends a Telegram message for this store type.
+    Returns a dict with total and found count.
     """
     checker_func = STORE_CHECKERS_MAP.get(store_type)
     if not checker_func:
-        return {"total": 0, "found": 0, "messages": []}
+        return {"total": 0, "found": 0}
 
-    available_messages = []
+    messages_found = []
     
     # Stores where we check against all pincodes
     if store_type in ["croma", "flipkart", "reliance_digital"]:
@@ -601,16 +598,57 @@ def check_store_products(store_type, products_to_check, pincodes):
             for pincode in pincodes:
                 message = checker_func(product, pincode)
                 if message:
-                    available_messages.append(message)
+                    messages_found.append(message)
                     break # Stop checking other pincodes once stock is found
     else:
         # Stores with no pincode or fixed stock (Amazon, iQOO, Vivo)
         for product in products_to_check:
             message = checker_func(product)
             if message:
-                available_messages.append(message)
+                messages_found.append(message)
 
-    return {"total": len(products_to_check), "found": len(available_messages), "messages": available_messages}
+    found_count = len(messages_found)
+    
+    # *** CORE CHANGE: Send message if any stock was found for this store type ***
+    if found_count > 0:
+        header = f"🔥 *Stock Alert: {store_type.replace('_', ' ').title()}* {STORE_EMOJIS.get(store_type, '📦')}\n\n"
+        full_message = header + "\n---\n".join(messages_found)
+        send_telegram_message(full_message, chat_id=TELEGRAM_GROUP_ID)
+        log_print(f"[STORE_SENDER] ✅ Sent alert for {store_type.title()} with {found_count} products.")
+    else:
+        log_print(f"[STORE_SENDER] ❌ No stock found for {store_type.title()}. Skipping alert.")
+
+    # Return counts for the final summary
+    return {"total": len(products_to_check), "found": found_count}
+
+def check_unicorn_store():
+    """Checks all unicorn products, sends a message if stock is found."""
+    COLOR_VARIANTS = {
+        "Lavender": "313", "Sage": "311", "Mist Blue": "312", 
+        "White": "314", "Black": "315",
+    }
+    STORAGE_256GB_ID = "250"
+    
+    messages_found = []
+
+    for color_name, color_id in COLOR_VARIANTS.items():
+        message = check_unicorn_product(color_name, color_id, STORAGE_256GB_ID)
+        if message:
+            messages_found.append(message)
+            
+    found_count = len(messages_found)
+    
+    # *** CORE CHANGE: Send message if any stock was found for Unicorn ***
+    if found_count > 0:
+        header = f"🔥 *Stock Alert: Unicorn* {STORE_EMOJIS.get('unicorn', '📦')}\n\n"
+        full_message = header + "\n---\n".join(messages_found)
+        send_telegram_message(full_message, chat_id=TELEGRAM_GROUP_ID)
+        log_print(f"[STORE_SENDER] ✅ Sent alert for Unicorn with {found_count} products.")
+    else:
+        log_print(f"[STORE_SENDER] ❌ No stock found for Unicorn. Skipping alert.")
+
+    # Return counts for the final summary
+    return {"total": len(COLOR_VARIANTS), "found": found_count}
 
 
 def main_logic():
@@ -627,9 +665,12 @@ def main_logic():
     # Stores to check concurrently
     all_store_types = list(STORE_CHECKERS_MAP.keys()) + ["unicorn"]
     tracked_stores = {
-        store: {"total": len(products_by_store.get(store, [])), "found": 0, "messages": []}
+        store: {"total": len(products_by_store.get(store, [])), "found": 0}
         for store in all_store_types
     }
+    
+    total_tracked = sum(data['total'] for data in tracked_stores.values())
+
 
     # --- Concurrent Check using ThreadPoolExecutor ---
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -647,10 +688,9 @@ def main_logic():
                 future_to_store[future] = store_type
 
         # Submit Unicorn task separately
-        # Unicorn checker returns a dict with 'total', 'found', 'messages'
-        future_to_store[executor.submit(check_unicorn)] = "unicorn"
+        future_to_store[executor.submit(check_unicorn_store)] = "unicorn"
         
-        # Collect results as they complete
+        # Collect results (counts only)
         for future in concurrent.futures.as_completed(future_to_store):
             store_type = future_to_store[future]
             try:
@@ -659,28 +699,8 @@ def main_logic():
             except Exception as e:
                 log_print(f"[ERROR] Concurrent check for {store_type} failed: {e}")
 
-    # 3. Compile Telegram messages and Final Summary
-    messages_to_send = []
-    total_found = 0
-    total_tracked = 0
-    
-    # Map for easy summary creation
-    STORE_EMOJIS = {
-        "croma": "🟢", "flipkart": "🟣", "amazon": "🟡", 
-        "unicorn": "🦄", "iqoo": "📱", "vivo": "🤳", 
-        "reliance_digital": "🌐"
-    }
-
-    # Generate individual store messages and update totals
-    for store_type, data in tracked_stores.items():
-        total_found += data["found"]
-        total_tracked += data["total"]
-        
-        if data["messages"]:
-            header = f"🔥 *Stock Alert: {store_type.replace('_', ' ').title()}* {STORE_EMOJIS.get(store_type, '📦')}\n\n"
-            message = header + "\n---\n".join(data["messages"])
-            messages_to_send.append({"store": store_type, "message": message})
-            
+    # 3. Compile Final Summary
+    total_found = sum(data['found'] for data in tracked_stores.values())
     
     duration = round(time.time() - start_time, 2)
     timestamp = datetime.datetime.now().strftime("%d %b %Y %I:%M %p")
@@ -701,7 +721,7 @@ def main_logic():
     log_print(f"[info] ✅ Finished check. Found {total_found} products in stock.")
     log_print("[info] Final Summary:\n" + final_summary)
     
-    return messages_to_send, final_summary
+    return total_found, total_tracked, final_summary
 
 
 # ==================================
@@ -726,25 +746,14 @@ class handler(BaseHTTPRequestHandler):
             return
 
         try:
-            # Main logic returns a list of individual messages to send (messages_to_send)
-            in_stock_results, final_summary = main_logic()
+            # Main logic runs checks and sends store-specific messages via worker threads
+            total_found, total_tracked, final_summary = main_logic()
 
-            # 2. Send Separate Telegram Messages for each store
-            store_messages_sent = 0
-            if in_stock_results:
-                log_print("[info] Sending individual store alerts...")
-                for result in in_stock_results:
-                    # Send alert to the main group/channel
-                    send_telegram_message(result["message"], chat_id=TELEGRAM_GROUP_ID)
-                    store_messages_sent += 1
-                log_print(f"[info] ✅ Sent {store_messages_sent} store-specific alerts.")
-            else:
-                log_print("[info] ❌ No products in stock - skipping store alerts.")
-            
-            # 3. Send the final summary to the main group/channel
+            # 2. Send the final summary to the main group/channel
+            log_print("[info] Sending final summary alert...")
             send_telegram_message(final_summary, chat_id=TELEGRAM_GROUP_ID)
             
-            # 4. Extract and send logs to the personal chat
+            # 3. Extract and send logs to the personal chat
             log_content = LOG_BUFFER.getvalue()
             send_log_file_telegram(log_content)
 
@@ -753,7 +762,7 @@ class handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(
                 json.dumps(
-                    {"status": "ok", "found": len(in_stock_results), "summary": final_summary}
+                    {"status": "ok", "found": total_found, "total": total_tracked, "summary": final_summary}
                 ).encode()
             )
 
