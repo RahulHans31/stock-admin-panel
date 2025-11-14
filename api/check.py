@@ -13,7 +13,7 @@ PINCODES_TO_CHECK = [p.strip() for p in PINCODES_STR.split(',') if p.strip()]
 DATABASE_URL = os.getenv("DATABASE_URL")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # Make Telegram Group ID configurable via environment variable
-TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID", "-4789301236") 
+TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID", "-5096879661") 
 CRON_SECRET = os.getenv("CRON_SECRET")
 
 # Flipkart Proxy (AlwaysData)
