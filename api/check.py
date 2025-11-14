@@ -1,5 +1,4 @@
 import os, json, requests, psycopg2, datetime, time
-import io
 import concurrent.futures
 from urllib.parse import urlparse, parse_qs
 from bs4 import BeautifulSoup
@@ -8,8 +7,6 @@ from http.server import BaseHTTPRequestHandler
 # ==================================
 # 🔧 CONFIGURATION
 # ==================================
-# This is your personal chat ID for log files
-TELEGRAM_LOG_CHAT_ID = os.getenv("TELEGRAM_LOG_CHAT_ID", "7992845749")
 # This is your main group/channel for stock alerts
 TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID", "-5096879661") 
 
@@ -23,7 +20,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 FLIPKART_PROXY_URL = "https://rknldeals.alwaysdata.net/flipkart_check"
 CRON_SECRET = os.getenv("CRON_SECRET")
 
-# Map for easy summary creation and alert formatting
+# Map for alert formatting
 STORE_EMOJIS = {
     "croma": "🟢", "flipkart": "🟣", "amazon": "🟡", 
     "unicorn": "🦄", "iqoo": "📱", "vivo": "🤳", 
@@ -32,27 +29,13 @@ STORE_EMOJIS = {
 
 
 # ==================================
-# 🪵 LOGGING & TELEGRAM UTILITIES
+# 💬 TELEGRAM UTILITIES
 # ==================================
-
-# In-memory buffer to capture all output
-LOG_BUFFER = io.StringIO()
-
-def log_print(*args, **kwargs):
-    """Replacement for print to capture output in the log buffer."""
-    message = ' '.join(map(str, args))
-    timestamp = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
-    full_message = f"{timestamp} {message}\n"
-    # Print to console (for Vercel logs)
-    import builtins
-    builtins.print(message, **kwargs) 
-    # Write to in-memory buffer
-    LOG_BUFFER.write(full_message)
 
 def send_telegram_message(message, chat_id=TELEGRAM_GROUP_ID):
     """Sends a single message to a specified chat ID."""
     if not TELEGRAM_BOT_TOKEN or not chat_id:
-        log_print(f"[warn] Missing Telegram config for chat {chat_id}.")
+        print(f"[warn] Missing Telegram config for chat {chat_id}.")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -66,47 +49,15 @@ def send_telegram_message(message, chat_id=TELEGRAM_GROUP_ID):
     try:
         res = requests.post(url, json=payload, timeout=10)
         if res.status_code != 200:
-            log_print(f"[warn] Telegram send failed to chat {chat_id}: {res.text}")
+            print(f"[warn] Telegram send failed to chat {chat_id}: {res.text}")
     except Exception as e:
-        log_print(f"[error] Telegram message error to chat {chat_id}: {e}")
-
-def send_log_file_telegram(log_content):
-    """Sends the log content as a .txt file to the dedicated log chat ID."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_LOG_CHAT_ID:
-        log_print("[warn] Missing Telegram LOG config. Cannot send log file.")
-        return
-
-    log_print(f"[info] Preparing to send log file to {TELEGRAM_LOG_CHAT_ID}...")
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
-    
-    try:
-        log_file = io.BytesIO(log_content.encode('utf-8'))
-        log_file.name = f"stock_check_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        
-        payload = {
-            "chat_id": TELEGRAM_LOG_CHAT_ID,
-            "caption": f"Stock Check Log File: {datetime.datetime.now().strftime('%d %b %Y %I:%M %p')}",
-        }
-        
-        files = {
-            "document": log_file
-        }
-
-        res = requests.post(url, data=payload, files=files, timeout=20)
-        
-        if res.status_code == 200:
-            log_print(f"[info] ✅ Log file sent successfully.")
-        else:
-            log_print(f"[warn] Telegram log file send failed: {res.text}")
-    except Exception as e:
-        log_print(f"[error] Telegram log file error: {e}")
+        print(f"[error] Telegram message error to chat {chat_id}: {e}")
 
 # ==================================
 # 🗄️ DATABASE
 # ==================================
 def get_products_from_db():
-    log_print("[info] Connecting to database...")
+    print("[info] Connecting to database...")
     # NOTE: psycopg2 should be installed if running this locally: pip install psycopg2-binary
     conn = psycopg2.connect(DATABASE_URL) 
     cursor = conn.cursor()
@@ -124,7 +75,7 @@ def get_products_from_db():
         }
         for row in products
     ]
-    log_print(f"[info] Loaded {len(products_list)} products from database.")
+    print(f"[info] Loaded {len(products_list)} products from database.")
     return products_list
 
 # ==================================
@@ -171,17 +122,17 @@ def check_unicorn_product(color_name, color_id, storage_id):
         product_url = "https://shop.unicornstore.in/iphone-17" 
         
         if int(quantity) > 0:
-            log_print(f"[UNICORN] ✅ {variant_name} is IN STOCK ({quantity} units)")
+            print(f"[UNICORN] ✅ {variant_name} is IN STOCK ({quantity} units)")
             return (
                 f"[{variant_name} - {sku}]({product_url})"
                 f"\n💰 Price: {price}, Qty: {quantity}"
             )
         else:
             dispatch_note = product_data.get("custom_column_4", "Out of Stock").strip()
-            log_print(f"[UNICORN] ❌ {variant_name} unavailable: {dispatch_note}")
+            print(f"[UNICORN] ❌ {variant_name} unavailable: {dispatch_note}")
             
     except Exception as e:
-        log_print(f"[error] Unicorn check failed for {variant_name}: {e}")
+        print(f"[error] Unicorn check failed for {variant_name}: {e}")
     
     return None
 
@@ -230,12 +181,12 @@ def check_croma_product(product, pincode):
         )
 
         if lines:
-            log_print(f"[CROMA] ✅ {product['name']} deliverable to {pincode}")
+            print(f"[CROMA] ✅ {product['name']} deliverable to {pincode}")
             return f"[{product['name']}]({product['affiliateLink'] or product['url']})\n📍 Pincode: {pincode}"
 
-        log_print(f"[CROMA] ❌ {product['name']} unavailable at {pincode}")
+        print(f"[CROMA] ❌ {product['name']} unavailable at {pincode}")
     except Exception as e:
-        log_print(f"[error] Croma check failed for {product['name']}: {e}")
+        print(f"[error] Croma check failed for {product['name']}: {e}")
     return None
 
 # --- Flipkart Checker (via Proxy) ---
@@ -246,7 +197,7 @@ def check_flipkart_product(product, pincode):
         res = requests.post(FLIPKART_PROXY_URL, json=payload, timeout=25)
 
         if res.status_code != 200:
-            log_print(f"[FLIPKART] ⚠️ Proxy failed ({res.status_code}) for {product['name']}")
+            print(f"[FLIPKART] ⚠️ Proxy failed ({res.status_code}) for {product['name']}")
             return None
 
         data = res.json()
@@ -256,25 +207,25 @@ def check_flipkart_product(product, pincode):
 
         if available:
             price = listing.get("pricing", {}).get("finalPrice", {}).get("decimalValue", None)
-            log_print(f"[FLIPKART] ✅ {product['name']} deliverable to {pincode}")
+            print(f"[FLIPKART] ✅ {product['name']} deliverable to {pincode}")
             return (
                 f"[{product['name']}]({product['affiliateLink'] or product['url']})\n"
                 f"📍 Pincode: {pincode}"
                 + (f", 💰 Price: ₹{price}" if price else "")
             )
 
-        log_print(f"[FLIPKART] ❌ {product['name']} not deliverable at {pincode}")
+        print(f"[FLIPKART] ❌ {product['name']} not deliverable at {pincode}")
         return None
 
     except Exception as e:
-        log_print(f"[error] Flipkart proxy check failed for {product['name']}: {e}")
+        print(f"[error] Flipkart proxy check failed for {product['name']}: {e}")
         return None
 
 # --- Amazon HTML Parser Checker ---
 def check_amazon_product(product):
     """Check stock availability by scraping the Amazon product page."""
     url = product["url"]
-    log_print(f"[AMAZON] Checking: {url}")
+    print(f"[AMAZON] Checking: {url}")
 
     headers = {
         "authority": "www.amazon.in",
@@ -296,7 +247,7 @@ def check_amazon_product(product):
 
     try:
         res = requests.get(url, headers=headers, timeout=20)
-        log_print(f"[AMAZON] Status code: {res.status_code}")
+        print(f"[AMAZON] Status code: {res.status_code}")
         html = res.text
         soup = BeautifulSoup(html, "html.parser")
 
@@ -319,17 +270,17 @@ def check_amazon_product(product):
         available = any(phrase in availability for phrase in available_phrases)
 
         if available:
-            log_print(f"[AMAZON] ✅ {title} is available at {price}")
+            print(f"[AMAZON] ✅ {title} is available at {price}")
             return (
                 f"[{title}]({product['affiliateLink'] or url})"
                 + (f", 💰 Price: {price}" if price else "")
             )
         else:
-            log_print(f"[AMAZON] ❌ {title} appears unavailable. (Availability text: '{availability}')")
+            print(f"[AMAZON] ❌ {title} appears unavailable. (Availability text: '{availability}')")
             return None
 
     except Exception as e:
-        log_print(f"[error] Amazon HTML check failed for {product['name']}: {e}")
+        print(f"[error] Amazon HTML check failed for {product['name']}: {e}")
         return None
 
 # --- Reliance Digital API Checker ---
@@ -343,10 +294,10 @@ def check_reliance_digital_product(product, pincode):
     article_id = product["productId"] 
     
     if not article_id:
-        log_print(f"[RD] ❌ Cannot check {name}: Missing internal Article ID.")
+        print(f"[RD] ❌ Cannot check {name}: Missing internal Article ID.")
         return None
 
-    log_print(f"[RD] Checking stock: {name} (ID: {article_id}) for Pincode {pincode}")
+    print(f"[RD] Checking stock: {name} (ID: {article_id}) for Pincode {pincode}")
 
     inventory_url = "https://www.reliancedigital.in/ext/raven-api/inventory/multi/articles-v2"
     
@@ -397,7 +348,7 @@ def check_reliance_digital_product(product, pincode):
             pass 
 
         if is_in_stock:
-            log_print(f"[RD] ✅ {name} is IN STOCK at {pincode}.")
+            print(f"[RD] ✅ {name} is IN STOCK at {pincode}.")
             return (
                 f"[{name}]({product['affiliateLink'] or url})"
                 f"\n📍 Pincode: {pincode}"
@@ -405,14 +356,14 @@ def check_reliance_digital_product(product, pincode):
             )
         else:
             error_message = article_error.get("message", "Stock Error")
-            log_print(f"[RD] ❌ {name} is UNAVAILABLE at {pincode}. (Error: {error_message})")
+            print(f"[RD] ❌ {name} is UNAVAILABLE at {pincode}. (Error: {error_message})")
             return None
 
     except requests.exceptions.RequestException as e:
-        log_print(f"[error] Reliance Digital inventory check failed for {name}: {e}")
+        print(f"[error] Reliance Digital inventory check failed for {name}: {e}")
         return None
     except Exception as e:
-        log_print(f"[error] Reliance Digital check failed for {name} (general): {e}")
+        print(f"[error] Reliance Digital check failed for {name} (general): {e}")
         return None
 
 # --- iQOO HTML Parser Checker ---
@@ -420,7 +371,7 @@ def check_iqoo_product(product):
     """Check stock availability for an iQOO product by scraping its product page."""
     url = product["url"]
     original_name = product["name"]
-    log_print(f"[IQOO] Checking: {original_name} at {url}")
+    print(f"[IQOO] Checking: {original_name} at {url}")
 
     headers = {
         "User-Agent": (
@@ -477,17 +428,17 @@ def check_iqoo_product(product):
 
 
         if is_available:
-            log_print(f"[IQOO] ✅ {product_name} is available.")
+            print(f"[IQOO] ✅ {product_name} is available.")
             return (
                 f"[{product_name}]({product['affiliateLink'] or url})"
                 f"{price_info}"
             )
         else:
-            log_print(f"[IQOO] ❌ {product_name} appears unavailable. ({availability_text})")
+            print(f"[IQOO] ❌ {product_name} appears unavailable. ({availability_text})")
             return None
 
     except Exception as e:
-        log_print(f"[error] iQOO check failed for {original_name}: {e}")
+        print(f"[error] iQOO check failed for {original_name}: {e}")
         return None
 
 # --- Vivo HTML Parser Checker ---
@@ -497,7 +448,7 @@ def check_vivo_product(product):
     """
     url = product["url"]
     original_name = product["name"]
-    log_print(f"[VIVO] Checking: {original_name} at {url}")
+    print(f"[VIVO] Checking: {original_name} at {url}")
 
     headers = {
         "User-Agent": (
@@ -509,7 +460,7 @@ def check_vivo_product(product):
 
     try:
         res = requests.get(url, headers=headers, timeout=20)
-        log_print(f"[VIVO] Status code: {res.status_code}")
+        print(f"[VIVO] Status code: {res.status_code}")
         html = res.text
         soup = BeautifulSoup(html, "html.parser")
 
@@ -555,17 +506,17 @@ def check_vivo_product(product):
 
 
         if is_available:
-            log_print(f"[VIVO] ✅ {product_name} is available.")
+            print(f"[VIVO] ✅ {product_name} is available.")
             return (
                 f"[{product_name}]({product['affiliateLink'] or url})"
                 f"{price_info}"
             )
         else:
-            log_print(f"[VIVO] ❌ {product_name} appears unavailable. ({availability_text})")
+            print(f"[VIVO] ❌ {product_name} appears unavailable. ({availability_text})")
             return None
 
     except Exception as e:
-        log_print(f"[error] Vivo check failed for {original_name}: {e}")
+        print(f"[error] Vivo check failed for {original_name}: {e}")
         return None
 
 
@@ -609,14 +560,14 @@ def check_store_products(store_type, products_to_check, pincodes):
 
     found_count = len(messages_found)
     
-    # *** CORE CHANGE: Send message if any stock was found for this store type ***
+    # *** Send message if any stock was found for this store type ***
     if found_count > 0:
         header = f"🔥 *Stock Alert: {store_type.replace('_', ' ').title()}* {STORE_EMOJIS.get(store_type, '📦')}\n\n"
         full_message = header + "\n---\n".join(messages_found)
         send_telegram_message(full_message, chat_id=TELEGRAM_GROUP_ID)
-        log_print(f"[STORE_SENDER] ✅ Sent alert for {store_type.title()} with {found_count} products.")
+        print(f"[STORE_SENDER] ✅ Sent alert for {store_type.title()} with {found_count} products.")
     else:
-        log_print(f"[STORE_SENDER] ❌ No stock found for {store_type.title()}. Skipping alert.")
+        print(f"[STORE_SENDER] ❌ No stock found for {store_type.title()}. Skipping alert.")
 
     # Return counts for the final summary
     return {"total": len(products_to_check), "found": found_count}
@@ -638,14 +589,14 @@ def check_unicorn_store():
             
     found_count = len(messages_found)
     
-    # *** CORE CHANGE: Send message if any stock was found for Unicorn ***
+    # *** Send message if any stock was found for Unicorn ***
     if found_count > 0:
         header = f"🔥 *Stock Alert: Unicorn* {STORE_EMOJIS.get('unicorn', '📦')}\n\n"
         full_message = header + "\n---\n".join(messages_found)
         send_telegram_message(full_message, chat_id=TELEGRAM_GROUP_ID)
-        log_print(f"[STORE_SENDER] ✅ Sent alert for Unicorn with {found_count} products.")
+        print(f"[STORE_SENDER] ✅ Sent alert for Unicorn with {found_count} products.")
     else:
-        log_print(f"[STORE_SENDER] ❌ No stock found for Unicorn. Skipping alert.")
+        print(f"[STORE_SENDER] ❌ No stock found for Unicorn. Skipping alert.")
 
     # Return counts for the final summary
     return {"total": len(COLOR_VARIANTS), "found": found_count}
@@ -653,7 +604,7 @@ def check_unicorn_store():
 
 def main_logic():
     start_time = time.time()
-    log_print("[info] Starting stock check...")
+    print("[info] Starting stock check...")
     products = get_products_from_db()
     
     # 1. Separate DB products by store type
@@ -697,29 +648,21 @@ def main_logic():
                 result = future.result()
                 tracked_stores[store_type].update(result)
             except Exception as e:
-                log_print(f"[ERROR] Concurrent check for {store_type} failed: {e}")
+                print(f"[ERROR] Concurrent check for {store_type} failed: {e}")
 
-    # 3. Compile Final Summary
+    # 3. Compile final results for handler JSON response
     total_found = sum(data['found'] for data in tracked_stores.values())
-    
     duration = round(time.time() - start_time, 2)
     timestamp = datetime.datetime.now().strftime("%d %b %Y %I:%M %p")
-
-    # Final Summary 
+    
     summary_lines = [
-        f"📦 *Stock Check Complete*\n",
         f"Found: {total_found}/{total_tracked} products available.",
         f"Time taken: {duration}s",
-        f"Checked at: {timestamp}\n",
+        f"Checked at: {timestamp}",
     ]
-    summary_lines.extend([
-        f"{STORE_EMOJIS[store]} *{store.replace('_', ' ').title()}:* {data['found']}/{data['total']}"
-        for store, data in tracked_stores.items()
-    ])
     final_summary = "\n".join(summary_lines)
-    
-    log_print(f"[info] ✅ Finished check. Found {total_found} products in stock.")
-    log_print("[info] Final Summary:\n" + final_summary)
+
+    print(f"[info] ✅ Finished check. Found {total_found} products in stock.")
     
     return total_found, total_tracked, final_summary
 
@@ -729,16 +672,12 @@ def main_logic():
 # ==================================
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # 1. Clear log buffer at the start
-        LOG_BUFFER.seek(0)
-        LOG_BUFFER.truncate(0)
-
-        log_print("[info] Handler started.")
+        print("[info] Handler started.")
         query_components = parse_qs(urlparse(self.path).query)
         auth_key = query_components.get("secret", [None])[0]
 
         if auth_key != CRON_SECRET:
-            log_print("[error] Unauthorized access attempt.")
+            print("[error] Unauthorized access attempt.")
             self.send_response(401)
             self.send_header("Content-type", "application/json")
             self.end_headers()
@@ -749,17 +688,12 @@ class handler(BaseHTTPRequestHandler):
             # Main logic runs checks and sends store-specific messages via worker threads
             total_found, total_tracked, final_summary = main_logic()
 
-            # 2. Send the final summary to the main group/channel
-            log_print("[info] Sending final summary alert...")
-            send_telegram_message(final_summary, chat_id=TELEGRAM_GROUP_ID)
+            # The final summary and logs are SKIPPED as requested.
             
-            # 3. Extract and send logs to the personal chat
-            log_content = LOG_BUFFER.getvalue()
-            send_log_file_telegram(log_content)
-
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
+            # Still return status in the HTTP response body for Vercel/cron job status tracking
             self.wfile.write(
                 json.dumps(
                     {"status": "ok", "found": total_found, "total": total_tracked, "summary": final_summary}
@@ -767,11 +701,7 @@ class handler(BaseHTTPRequestHandler):
             )
 
         except Exception as e:
-            log_print(f"[fatal error] {e}")
-            
-            # Capture final logs after the error
-            log_content = LOG_BUFFER.getvalue()
-            send_log_file_telegram(log_content) # Attempt to send log even on error
+            print(f"[fatal error] {e}")
 
             self.send_response(500)
             self.send_header("Content-type", "application/json")
