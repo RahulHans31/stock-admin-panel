@@ -1,15 +1,14 @@
 import os, json, requests, psycopg2, datetime, time
 import concurrent.futures
 from urllib.parse import urlparse, parse_qs
-from bs4 import BeautifulSoup
 from http.server import BaseHTTPRequestHandler
+import hashlib # Added for Amazon API
+import hmac     # Added for Amazon API
 
 # ==================================
 # 🔧 CONFIGURATION
 # ==================================
-# This is your main group/channel for stock alerts
-TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID", "-5096879661") 
-
+TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID") 
 PINCODES_STR = os.getenv("PINCODES_TO_CHECK", "110016") 
 PINCODES_TO_CHECK = [p.strip() for p in PINCODES_STR.split(',') if p.strip()]
 
@@ -20,18 +19,24 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 FLIPKART_PROXY_URL = "https://rknldeals.alwaysdata.net/flipkart_check"
 CRON_SECRET = os.getenv("CRON_SECRET")
 
-# Map for alert formatting
+# --- Amazon PAAPI Credentials ---
+AMAZON_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
+AMAZON_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AMAZON_PARTNER_TAG = os.getenv("AMAZON_PARTNER_TAG")
+AMAZON_HOST = "webservices.amazon.in"
+AMAZON_REGION = "eu-west-1"
+AMAZON_SERVICE = "ProductAdvertisingAPI"
+AMAZON_ENDPOINT = "https://webservices.amazon.in/paapi5/getitems"
+
 STORE_EMOJIS = {
     "croma": "🟢", "flipkart": "🟣", "amazon": "🟡", 
     "unicorn": "🦄", "iqoo": "📱", "vivo": "🤳", 
     "reliance_digital": "🌐"
 }
 
-
 # ==================================
 # 💬 TELEGRAM UTILITIES
 # ==================================
-
 def send_telegram_message(message, chat_id=TELEGRAM_GROUP_ID):
     """Sends a single message to a specified chat ID."""
     if not TELEGRAM_BOT_TOKEN or not chat_id:
@@ -58,7 +63,6 @@ def send_telegram_message(message, chat_id=TELEGRAM_GROUP_ID):
 # ==================================
 def get_products_from_db():
     print("[info] Connecting to database...")
-    # NOTE: psycopg2 should be installed if running this locally: pip install psycopg2-binary
     conn = psycopg2.connect(DATABASE_URL) 
     cursor = conn.cursor()
     cursor.execute("SELECT name, url, product_id, store_type, affiliate_link FROM products")
@@ -79,10 +83,23 @@ def get_products_from_db():
     return products_list
 
 # ==================================
-# 🛒 STORE CHECKERS - RETURN FORMATTED MESSAGE STRING OR None
+# 🔑 AMAZON V4 SIGNATURE HELPERS
+# ==================================
+def sign(key, msg):
+    return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
+
+def getSignatureKey(key, dateStamp, regionName, serviceName):
+    kDate = sign(('AWS4' + key).encode('utf-8'), dateStamp)
+    kRegion = sign(kDate, regionName)
+    kService = sign(kRegion, serviceName)
+    kSigning = sign(kService, 'aws4_request')
+    return kSigning
+
+# ==================================
+# 🛒 STORE CHECKERS (API-ONLY)
 # ==================================
 
-# --- Unicorn Checker (Product by Product logic is inside the parent caller) ---
+# --- Unicorn Checker (API - OK) ---
 def check_unicorn_product(color_name, color_id, storage_id):
     """Checks stock for a single iPhone 17 (256GB) variant at Unicorn Store."""
     
@@ -95,7 +112,6 @@ def check_unicorn_product(color_name, color_id, storage_id):
         "referer": "https://shop.unicornstore.in/",
     }
     
-    # Fixed product attributes for iPhone 17 (Category 456)
     CATEGORY_ID = "456" 
     FAMILY_ID = "94"
     GROUP_IDS = "57,58"
@@ -136,7 +152,7 @@ def check_unicorn_product(color_name, color_id, storage_id):
     
     return None
 
-# --- Croma Checker ---
+# --- Croma Checker (API - OK) ---
 def check_croma_product(product, pincode):
     """Checks stock for a single Croma product at one pincode."""
     url = "https://api.croma.com/inventory/oms/v2/tms/details-pwa/"
@@ -189,7 +205,7 @@ def check_croma_product(product, pincode):
         print(f"[error] Croma check failed for {product['name']}: {e}")
     return None
 
-# --- Flipkart Checker (via Proxy) ---
+# --- Flipkart Checker (API - OK) ---
 def check_flipkart_product(product, pincode):
     """Checks stock for a single Flipkart product at one pincode via proxy."""
     try:
@@ -221,69 +237,113 @@ def check_flipkart_product(product, pincode):
         print(f"[error] Flipkart proxy check failed for {product['name']}: {e}")
         return None
 
-# --- Amazon HTML Parser Checker ---
-def check_amazon_product(product):
-    """Check stock availability by scraping the Amazon product page."""
-    url = product["url"]
-    print(f"[AMAZON] Checking: {url}")
+# --- Amazon API Checker (PAAPI v5) ---
+def check_amazon_api(product):
+    """Checks Amazon stock using the direct PAAPI v5."""
+    asin = product["productId"]
+    print(f"[AMAZON_API] Checking: {asin}")
+
+    if not all([AMAZON_ACCESS_KEY, AMAZON_SECRET_KEY, AMAZON_PARTNER_TAG]):
+        print("[error] Amazon API credentials (KEY, SECRET, TAG) are not set.")
+        return None
+
+    t = datetime.datetime.utcnow()
+    amz_date = t.strftime('%Y%m%dT%H%M%SZ')
+    date_stamp = t.strftime('%Y%m%d')
+
+    payload = {
+        "ItemIds": [asin],
+        "PartnerTag": AMAZON_PARTNER_TAG,
+        "PartnerType": "Associates",
+        "Marketplace": "www.amazon.in",
+        "Resources": [
+            "OffersV2.Listings.Availability",
+            "ItemInfo.Title"
+        ]
+    }
+    payload_str = json.dumps(payload)
+
+    method = 'POST'
+    target = 'com.amazon.paapi5.v1.ProductAdvertisingAPIv1.GetItems'
+    content_type = 'application/json; charset=UTF-8'
+    
+    canonical_headers = (
+        f'content-type:{content_type}\n'
+        f'host:{AMAZON_HOST}\n'
+        f'x-amz-date:{amz_date}\n'
+        f'x-amz-target:{target}\n'
+    )
+    signed_headers = 'content-type;host;x-amz-date;x-amz-target'
+    payload_hash = hashlib.sha256(payload_str.encode('utf-8')).hexdigest()
+    
+    canonical_request = (
+        f'{method}\n'
+        '/paapi5/getitems\n'
+        '\n'
+        f'{canonical_headers}\n'
+        f'{signed_headers}\n'
+        f'{payload_hash}'
+    )
+
+    algorithm = 'AWS4-HMAC-SHA256'
+    credential_scope = f'{date_stamp}/{AMAZON_REGION}/{AMAZON_SERVICE}/aws4_request'
+    canonical_request_hash = hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()
+    
+    string_to_sign = (
+        f'{algorithm}\n'
+        f'{amz_date}\n'
+        f'{credential_scope}\n'
+        f'{canonical_request_hash}'
+    )
+
+    signing_key = getSignatureKey(AMAZON_SECRET_KEY, date_stamp, AMAZON_REGION, AMAZON_SERVICE)
+    signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+
+    authorization_header = (
+        f'{algorithm} '
+        f'Credential={AMAZON_ACCESS_KEY}/{credential_scope}, '
+        f'SignedHeaders={signed_headers}, '
+        f'Signature={signature}'
+    )
 
     headers = {
-        "authority": "www.amazon.in",
-        "method": "GET",
-        "scheme": "https",
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "accept-language": "en-US,en;q=0.9",
-        "cache-control": "max-age=0",
-        "sec-ch-ua": '"Not_A Brand";v="99", "Google Chrome";v="137", "Chromium";v="137"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "upgrade-insecure-requests": "1",
-        "user-agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/137.0.0.0 Safari/537.36"
-        ),
+        'Content-Type': content_type,
+        'X-Amz-Date': amz_date,
+        'X-Amz-Target': target,
+        'Authorization': authorization_header,
+        'Content-Encoding': 'amz-1.0',
+        'Host': AMAZON_HOST
     }
 
     try:
-        res = requests.get(url, headers=headers, timeout=20)
-        print(f"[AMAZON] Status code: {res.status_code}")
-        html = res.text
-        soup = BeautifulSoup(html, "html.parser")
+        res = requests.post(AMAZON_ENDPOINT, data=payload_str, headers=headers, timeout=10)
+        res.raise_for_status()
+        data = res.json()
 
-        title_el = soup.select_one("#productTitle")
-        price_el = soup.select_one(".a-price .a-offscreen")
-        availability_el = soup.select_one("#availability span")
+        item = data.get("ItemsResult", {}).get("Items", [{}])[0]
+        listing = item.get("OffersV2", {}).get("Listings", [{}])[0]
+        availability = listing.get("Availability", {})
+        availability_message = availability.get("Message", "Status Unknown")
+        availability_type = availability.get("Type", "OUT_OF_STOCK")
 
-        title = title_el.get_text(strip=True) if title_el else product["name"]
-        price = price_el.get_text(strip=True) if price_el else None
-        availability = availability_el.get_text(strip=True).lower() if availability_el else ""
-
-        available_phrases = [
-            "in stock",
-            "free delivery",
-            "delivery by",
-            "usually dispatched",
-            "get it by",
-            "available",
-        ]
-        available = any(phrase in availability for phrase in available_phrases)
-
-        if available:
-            print(f"[AMAZON] ✅ {title} is available at {price}")
+        if availability_type == "IN_STOCK" or "in stock" in availability_message.lower():
+            product_title = item.get("ItemInfo", {}).get("Title", {}).get("DisplayValue", product["name"])
+            print(f"[AMAZON_API] ✅ {product_title} is IN STOCK")
             return (
-                f"[{title}]({product['affiliateLink'] or url})"
-                + (f", 💰 Price: {price}" if price else "")
+                f"[{product_title}]({product['affiliateLink'] or product['url']})\n"
+                f"💰 Price: N/A (Price check removed)"
             )
         else:
-            print(f"[AMAZON] ❌ {title} appears unavailable. (Availability text: '{availability}')")
+            print(f"[AMAZON_API] ❌ {product['name']} is {availability_message}")
             return None
 
     except Exception as e:
-        print(f"[error] Amazon HTML check failed for {product['name']}: {e}")
+        print(f"[error] Amazon API check failed for {asin}: {e}")
+        if hasattr(e, 'response') and e.response:
+            print(f"[error] Amazon Response: {e.response.text}")
         return None
 
-# --- Reliance Digital API Checker ---
+# --- OPTIMIZED Reliance Digital API Checker (No Price Scrape) ---
 def check_reliance_digital_product(product, pincode):
     """
     Check stock availability for a Reliance Digital product by querying the 
@@ -337,22 +397,15 @@ def check_reliance_digital_product(product, pincode):
         
         is_in_stock = not (error_type and error_type in ["OutOfStockError", "FaultyArticleError"])
         
-        price = None
-        try:
-            res_html = requests.get(url, headers=inventory_headers, timeout=10)
-            soup = BeautifulSoup(res_html.text, "html.parser")
-            price_el = soup.select_one('.pdpPrice, .product-price .amount, .final-price, [class*="Price"]')
-            if price_el:
-                price = price_el.get_text(strip=True).replace('\n', ' ').replace('₹', '').strip() 
-        except Exception:
-            pass 
+        # --- HTML PRICE SCRAPING REMOVED TO SAVE CPU ---
+        price = None 
 
         if is_in_stock:
             print(f"[RD] ✅ {name} is IN STOCK at {pincode}.")
             return (
                 f"[{name}]({product['affiliateLink'] or url})"
                 f"\n📍 Pincode: {pincode}"
-                + (f", 💰 Price: ₹{price}" if price else "")
+                + (f", 💰 Price: N/A" if not price else "") # Price will not be available
             )
         else:
             error_message = article_error.get("message", "Stock Error")
@@ -366,169 +419,124 @@ def check_reliance_digital_product(product, pincode):
         print(f"[error] Reliance Digital check failed for {name} (general): {e}")
         return None
 
-# --- iQOO HTML Parser Checker ---
-def check_iqoo_product(product):
-    """Check stock availability for an iQOO product by scraping its product page."""
-    url = product["url"]
-    original_name = product["name"]
-    print(f"[IQOO] Checking: {original_name} at {url}")
+# --- iQOO API Checker (FINAL) ---
+def check_iqoo_api(product):
+    """Checks iQOO stock using the direct API endpoint."""
+    product_id = product["productId"] # This is the SPU ID
+    IQOO_API_URL = f"https://mshop.iqoo.com/in/api/product/activityInfo/all/{product_id}"
+    
+    print(f"[IQOO_API] Checking: {product_id} at {IQOO_API_URL}")
 
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/137.0.0.0 Safari/537.36"
-        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": f"https://mshop.iqoo.com/in/product/{product_id}",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/5.36"
     }
 
     try:
-        res = requests.get(url, headers=headers, timeout=20)
-        html = res.text
-        soup = BeautifulSoup(html, "html.parser")
+        res = requests.get(IQOO_API_URL, headers=headers, timeout=10)
+        res.raise_for_status()
+        data = res.json()
 
-        page_title = soup.find('title')
-        product_name = page_title.get_text(strip=True).split('|')[0].strip() if page_title else original_name
-        
-        buy_now_button = soup.select_one('button:contains("Buy Now"), a:contains("Buy Now")')
-        out_of_stock_phrases = ["out of stock", "currently unavailable", "notify me"]
-        page_text = soup.get_text().lower()
-        
-        is_available = True
-        availability_text = "Status indeterminate."
-        
-        if buy_now_button:
-            is_disabled = buy_now_button.get('disabled') or 'disabled' in buy_now_button.get('class', []) or 'out-of-stock' in buy_now_button.get('class', [])
-            
-            if is_disabled:
-                is_available = False
-                availability_text = "Buy Now button disabled/out-of-stock class found."
-            else:
-                is_available = True
-                availability_text = "Active Buy Now button found."
-        
-        if not is_available and any(phrase in page_text for phrase in out_of_stock_phrases):
-             is_available = False
-             availability_text = "Explicit 'out of stock' phrase found in page text."
-             
-        if not buy_now_button and any(phrase in page_text for phrase in out_of_stock_phrases):
-             is_available = False
-             availability_text = "No clear button, but OOS text found."
-
-        price_el = soup.select_one('.price-tag, .product-price, .current_price, .selling-price')
-        price = price_el.get_text(strip=True) if price_el else None
-        
-        offer_el = soup.select_one('.product-offers, .discount-details, .emi-details')
-        offers = offer_el.get_text(strip=True) if offer_el else None
-        
-        price_info = ""
-        if price:
-            price_info += f", 💰 Price: {price.strip()}"
-        if offers and len(offers) < 150: 
-             price_info += f", 🎁 Offers: {offers.strip()}"
-
-
-        if is_available:
-            print(f"[IQOO] ✅ {product_name} is available.")
-            return (
-                f"[{product_name}]({product['affiliateLink'] or url})"
-                f"{price_info}"
-            )
-        else:
-            print(f"[IQOO] ❌ {product_name} appears unavailable. ({availability_text})")
+        if data.get("success") != "1" or "data" not in data:
+            print(f"[IQOO_API] ❌ {product['name']} failed. API success was not '1'.")
             return None
 
+        sku_list = data.get("data", {}).get("activitySkuList", [])
+        if not sku_list:
+            print(f"[IQOO_API] ❌ {product['name']} - No SKU list found in response.")
+            return None
+
+        is_in_stock = False
+        for sku in sku_list:
+            reservable_id = sku.get("activityInfo", {}).get("reservableId")
+            if reservable_id == -1:
+                is_in_stock = True
+                break 
+
+        if is_in_stock:
+            print(f"[IQOO_API] ✅ {product['name']} is IN STOCK")
+            return (
+                f"[{product['name']}]({product['affiliateLink'] or product['url']})\n"
+                f"💰 Price: N/A (API doesn't show price)"
+            )
+        else:
+            print(f"[IQOO_API] ❌ {product['name']} is Out of Stock (reservableId was not -1).")
+            return None
+            
     except Exception as e:
-        print(f"[error] iQOO check failed for {original_name}: {e}")
+        print(f"[error] iQOO API check failed for {product_id}: {e}")
         return None
 
-# --- Vivo HTML Parser Checker ---
-def check_vivo_product(product):
-    """
-    Check stock availability for a Vivo product by scraping its product page.
-    """
-    url = product["url"]
-    original_name = product["name"]
-    print(f"[VIVO] Checking: {original_name} at {url}")
+# --- Vivo API Checker (FINAL) ---
+def check_vivo_api(product):
+    """Checks Vivo stock using the direct API endpoint."""
+    product_id = product["productId"] # This is the SPU ID
+    VIVO_API_URL = f"https://mshop.vivo.com/in/api/product/activityInfo/all/{product_id}"
+    
+    print(f"[VIVO_API] Checking: {product_id} at {VIVO_API_URL}")
 
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/137.0.0.0 Safari/537.36"
-        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": f"https://mshop.vivo.com/in/product/{product_id}",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/5.36"
     }
 
     try:
-        res = requests.get(url, headers=headers, timeout=20)
-        print(f"[VIVO] Status code: {res.status_code}")
-        html = res.text
-        soup = BeautifulSoup(html, "html.parser")
+        res = requests.get(VIVO_API_URL, headers=headers, timeout=10)
+        res.raise_for_status()
+        data = res.json()
 
-        page_title = soup.find('title')
-        product_name = page_title.get_text(strip=True).split('|')[0].strip() if page_title else original_name
-
-        buy_now_link = soup.select_one('a.buyNow, .addToCart, .buyButton')
-        out_of_stock_phrases = ["out of stock", "notify me", "currently unavailable"]
-        page_text_lower = soup.get_text().lower()
-        
-        is_available = True
-        availability_text = "Status indeterminate."
-
-        if buy_now_link:
-            is_disabled = 'disabled' in buy_now_link.get('class', [])
-            
-            if is_disabled:
-                is_available = False
-                availability_text = f"Buy Now link found but disabled."
-            else:
-                is_available = True
-                availability_text = f"Active Buy Now link found."
-        
-        if not is_available and any(phrase in page_text_lower for phrase in out_of_stock_phrases):
-             is_available = False
-             availability_text = "Explicit 'out of stock' phrase found in page text."
-             
-        if not buy_now_link and any(phrase in page_text_lower for phrase in out_of_stock_phrases):
-             is_available = False
-             availability_text = "No active Buy Now link found."
-
-        price_el = soup.select_one('.price-tag, .product-price, .current_price, .selling-price, .js-final-price')
-        price = price_el.get_text(strip=True) if price_el else None
-        
-        offer_el = soup.select_one('.product-offers, .discount-details, .emi-details')
-        offers = offer_el.get_text(strip=True) if offer_el else None
-        
-        price_info = ""
-        if price:
-            price_info += f", 💰 Price: {price.strip()}"
-        if offers and len(offers) < 150: 
-             price_info += f", 🎁 Offers: {offers.strip()}"
-
-
-        if is_available:
-            print(f"[VIVO] ✅ {product_name} is available.")
-            return (
-                f"[{product_name}]({product['affiliateLink'] or url})"
-                f"{price_info}"
-            )
-        else:
-            print(f"[VIVO] ❌ {product_name} appears unavailable. ({availability_text})")
+        if data.get("success") != "1" or "data" not in data:
+            print(f"[VIVO_API] ❌ {product['name']} failed. API success was not '1'.")
             return None
 
+        sku_list = data.get("data", {}).get("activitySkuList", [])
+        if not sku_list:
+            print(f"[VIVO_API] ❌ {product['name']} - No SKU list found in response.")
+            return None
+
+        is_in_stock = False
+        for sku in sku_list:
+            reservable_id = sku.get("activityInfo", {}).get("reservableId")
+            if reservable_id == -1:
+                is_in_stock = True
+                break 
+
+        if is_in_stock:
+            print(f"[VIVO_API] ✅ {product['name']} is IN STOCK")
+            return (
+                f"[{product['name']}]({product['affiliateLink'] or product['url']})\n"
+                f"💰 Price: N/A (API doesn't show price)"
+            )
+        else:
+            print(f"[VIVO_API] ❌ {product['name']} is Out of Stock (reservableId was not -1).")
+            return None
+            
     except Exception as e:
-        print(f"[error] Vivo check failed for {original_name}: {e}")
+        print(f"[error] Vivo API check failed for {product_id}: {e}")
         return None
 
+
+# ==================================
+# 🗺️ STORE CHECKER MAP (UPDATED)
+# ==================================
 
 # Map store type to the specific checker function (single product check)
 STORE_CHECKERS_MAP = {
     "croma": check_croma_product,
     "flipkart": check_flipkart_product,
-    "amazon": check_amazon_product,
-    "reliance_digital": check_reliance_digital_product,
-    "iqoo": check_iqoo_product,
-    "vivo": check_vivo_product,
+    "amazon": check_amazon_api,                # <-- Uses new API function
+    "reliance_digital": check_reliance_digital_product, # <-- Uses optimized API function
+    "iqoo": check_iqoo_api,                      # <-- Uses new API function
+    "vivo": check_vivo_api,                      # <-- Uses new API function
 }
+
+# ==================================
+# 🚀 CHECKER HELPERS
+# ==================================
 
 # Helper wrapper for concurrent execution of DB-tracked products
 def check_store_products(store_type, products_to_check, pincodes):
@@ -552,7 +560,7 @@ def check_store_products(store_type, products_to_check, pincodes):
                     messages_found.append(message)
                     break # Stop checking other pincodes once stock is found
     else:
-        # Stores with no pincode or fixed stock (Amazon, iQOO, Vivo)
+        # Stores with no pincode (Amazon, iQOO, Vivo)
         for product in products_to_check:
             message = checker_func(product)
             if message:
@@ -589,7 +597,6 @@ def check_unicorn_store():
             
     found_count = len(messages_found)
     
-    # *** Send message if any stock was found for Unicorn ***
     if found_count > 0:
         header = f"🔥 *Stock Alert: Unicorn* {STORE_EMOJIS.get('unicorn', '📦')}\n\n"
         full_message = header + "\n---\n".join(messages_found)
@@ -598,10 +605,12 @@ def check_unicorn_store():
     else:
         print(f"[STORE_SENDER] ❌ No stock found for Unicorn. Skipping alert.")
 
-    # Return counts for the final summary
     return {"total": len(COLOR_VARIANTS), "found": found_count}
 
 
+# ==================================
+# 🧠 MAIN LOGIC (Original - No Bucketing)
+# ==================================
 def main_logic():
     start_time = time.time()
     print("[info] Starting stock check...")
@@ -688,12 +697,9 @@ class handler(BaseHTTPRequestHandler):
             # Main logic runs checks and sends store-specific messages via worker threads
             total_found, total_tracked, final_summary = main_logic()
 
-            # The final summary and logs are SKIPPED as requested.
-            
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
-            # Still return status in the HTTP response body for Vercel/cron job status tracking
             self.wfile.write(
                 json.dumps(
                     {"status": "ok", "found": total_found, "total": total_tracked, "summary": final_summary}
