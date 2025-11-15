@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler
 # This is your main group/channel for stock alerts
 TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID", "-5096879661") 
 
-PINCODES_STR = os.getenv("PINCODES_TO_CHECK", "132001") 
+PINCODES_STR = os.getenv("PINCODES_TO_CHECK", "110016") 
 PINCODES_TO_CHECK = [p.strip() for p in PINCODES_STR.split(',') if p.strip()]
 
 DATABASE_URL = os.getenv("DATABASE_URL")
