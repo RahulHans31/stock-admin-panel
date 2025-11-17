@@ -31,7 +31,8 @@ AMAZON_ENDPOINT = "https://webservices.amazon.in/paapi5/getitems"
 STORE_EMOJIS = {
     "croma": "🟢", "flipkart": "🟣", "amazon": "🟡", 
     "unicorn": "🦄", "iqoo": "📱", "vivo": "🤳", 
-    "reliance_digital": "🌐"
+    "reliance_digital": "🌐",
+    "vijay_sales": "🛍️" # <-- ADDED
 }
 
 # ==================================
@@ -607,6 +608,101 @@ def check_unicorn_store():
 
     return {"total": len(COLOR_VARIANTS), "found": found_count}
 
+# ==================================
+# 🛍️ VIJAY SALES STATIC CHECKER (NEW)
+# ==================================
+def check_vijay_sales_store():
+    """Checks stock for the 5 fixed iPhone 17 variants on Vijay Sales."""
+    # Use the globally loaded pincodes
+    PINCODES = PINCODES_TO_CHECK  
+    
+    # Hardcoded products (like Unicorn function)
+    PRODUCTS = {
+        "iPhone 17 Mist Blue 256GB": {
+            "vanNo": "245181",
+            "url": "https://www.vijaysales.com/p/P245179/245181/apple-iphone-17-256gb-storage-mist-blue"
+        },
+        "iPhone 17 Black 256GB": {
+            "vanNo": "245179",
+            "url": "https://www.vijaysales.com/p/P245179/245179/apple-iphone-17-256gb-storage-black"
+        },
+        "iPhone 17 White 256GB": {
+            "vanNo": "245180",
+            "url": "https://www.vijaysales.com/p/P245179/245180/apple-iphone-17-256gb-storage-white"
+        },
+        "iPhone 17 Lavender 256GB": {
+            "vanNo": "245182",
+            "url": "https://www.vijaysales.com/p/P245179/245182/apple-iphone-17-256gb-storage-lavender"
+        },
+        "iPhone 17 Sage 256GB": {
+            "vanNo": "245183",
+            "url": "https://www.vijaysales.com/p/P245179/245183/apple-iphone-17-256gb-storage-sage"
+        }
+    }
+
+    messages_found = []
+    total_variants = len(PRODUCTS)
+
+    for name, info in PRODUCTS.items():
+        vanNo = info["vanNo"]
+        url = info["url"]
+
+        for pin in PINCODES:
+            api_url = (
+                f"https://mdm.vijaysales.com/web/api/oms/check-servicibility/v1"
+                f"?pincode={pin}&vanNo={vanNo}&storeList=true"
+            )
+
+            headers = {
+                "accept": "*/*",
+                "origin": "https://www.vijaysales.com",
+                "referer": "https://www.vijaysales.com/",
+                "user-agent": (
+                    "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142 Mobile Safari/537.36"
+                )
+            }
+
+            try:
+                res = requests.get(api_url, headers=headers, timeout=10)
+                data = res.json()
+
+                detail = data.get("data", {}).get(str(vanNo), {})
+                delivery = detail.get("isServiceable", False)
+                pickup_list = detail.get("storePickupList", [])
+                pickup = len(pickup_list) > 0
+
+                if delivery or pickup:
+                    print(f"[VS] ✅ {name} available at {pin}")
+                    msg = (
+                        f"[{name}]({url})\n"
+                        f"📦 Delivery: {'YES' if delivery else 'NO'}, "
+                        f"🏬 Pickup: {'YES' if pickup else 'NO'}\n"
+                        f"📍 Pincode: {pin}"
+                    )
+                    messages_found.append(msg)
+                    break  # no need to check other pincodes
+
+                else:
+                    print(f"[VS] ❌ {name} not at {pin}")
+
+            except Exception as e:
+                print(f"[error] Vijay Sales failed for {name}: {e}")
+    
+    # --- Add the Telegram sending logic ---
+    found_count = len(messages_found)
+    
+    if found_count > 0:
+        header = f"🔥 *Stock Alert: Vijay Sales* {STORE_EMOJIS.get('vijay_sales', '🛍️')}\n\n"
+        full_message = header + "\n---\n".join(messages_found)
+        send_telegram_message(full_message, chat_id=TELEGRAM_GROUP_ID)
+        print(f"[STORE_SENDER] ✅ Sent alert for Vijay Sales with {found_count} products.")
+    else:
+        print(f"[STORE_SENDER] ❌ No stock found for Vijay Sales. Skipping alert.")
+
+    # --- Return the standard count dictionary ---
+    return {"total": total_variants, "found": found_count}
+
 
 # ==================================
 # 🧠 MAIN LOGIC (Original - No Bucketing)
@@ -623,11 +719,16 @@ def main_logic():
     }
     
     # Stores to check concurrently
-    all_store_types = list(STORE_CHECKERS_MAP.keys()) + ["unicorn"]
+    # <-- MODIFIED
+    all_store_types = list(STORE_CHECKERS_MAP.keys()) + ["unicorn", "vijay_sales"]
     tracked_stores = {
         store: {"total": len(products_by_store.get(store, [])), "found": 0}
         for store in all_store_types
     }
+    
+    # Manually set total for static checkers
+    tracked_stores["unicorn"]["total"] = 5 # Fixed variants
+    tracked_stores["vijay_sales"]["total"] = 5 # Fixed variants
     
     total_tracked = sum(data['total'] for data in tracked_stores.values())
 
@@ -650,12 +751,16 @@ def main_logic():
         # Submit Unicorn task separately
         future_to_store[executor.submit(check_unicorn_store)] = "unicorn"
         
+        # Submit Vijay Sales task separately <-- ADDED
+        future_to_store[executor.submit(check_vijay_sales_store)] = "vijay_sales"
+        
         # Collect results (counts only)
         for future in concurrent.futures.as_completed(future_to_store):
             store_type = future_to_store[future]
             try:
                 result = future.result()
-                tracked_stores[store_type].update(result)
+                # Update found count, but keep total as set above
+                tracked_stores[store_type]["found"] = result.get("found", 0)
             except Exception as e:
                 print(f"[ERROR] Concurrent check for {store_type} failed: {e}")
 
