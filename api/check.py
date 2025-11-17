@@ -17,6 +17,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Flipkart Proxy (AlwaysData)
 FLIPKART_PROXY_URL = "https://rknldeals.alwaysdata.net/flipkart_check"
+# Reliance Digital Proxy (AlwaysData)
+RELIANCE_PROXY_URL = "https://rknldeals.alwaysdata.net/reliance_check"
+
 CRON_SECRET = os.getenv("CRON_SECRET")
 
 # --- Amazon PAAPI Credentials ---
@@ -347,77 +350,37 @@ def check_amazon_api(product):
 # --- OPTIMIZED Reliance Digital API Checker (No Price Scrape) ---
 def check_reliance_digital_product(product, pincode):
     """
-    Check stock availability for a Reliance Digital product by querying the 
-    inventory API directly using the internal 'article_id'.
+    Checks Reliance Digital stock via the AlwaysData proxy.
+    Proxy returns:
+        { "status": "ok", "available": true/false, "raw": {...} }
     """
-    name = product["name"]
-    url = product["url"]
-    article_id = product["productId"] 
-    
-    if not article_id:
-        print(f"[RD] ❌ Cannot check {name}: Missing internal Article ID.")
-        return None
-
-    print(f"[RD] Checking stock: {name} (ID: {article_id}) for Pincode {pincode}")
-
-    inventory_url = "https://www.reliancedigital.in/ext/raven-api/inventory/multi/articles-v2"
-    
-    inventory_headers = {
-        "accept": "application/json, text/plain, */*",
-        "content-type": "application/json",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-        "origin": "https://www.reliancedigital.in",
-        "referer": "https://www.reliancedigital.in/",
-    }
-
-    payload = {
-        "articles": [
-            {
-                "article_id": str(article_id),
-                "custom_json": {}, 
-                "quantity": 1
-            }
-        ],
-        "phone_number": "0",
-        "pincode": str(pincode),
-        "request_page": "pdp"
-    }
-
     try:
-        res = requests.post(inventory_url, headers=inventory_headers, json=payload, timeout=20)
-        res.raise_for_status() 
+        payload = {
+            "productId": product["productId"],
+            "pincode": pincode
+        }
+
+        res = requests.post(RELIANCE_PROXY_URL, json=payload, timeout=20)
+
+        if res.status_code != 200:
+            print(f"[RD] Proxy error {res.status_code} for {product['name']}")
+            return None
+
         data = res.json()
-        
-        article_data = data.get("data", {}).get("articles", [])
-        if not article_data:
-            return None
+        available = data.get("available", False)
 
-        article = article_data[0]
-        article_error = article.get("error", {})
-        error_type = article_error.get("type")
-        
-        is_in_stock = not (error_type and error_type in ["OutOfStockError", "FaultyArticleError"])
-        
-        # --- HTML PRICE SCRAPING REMOVED TO SAVE CPU ---
-        price = None 
-
-        if is_in_stock:
-            print(f"[RD] ✅ {name} is IN STOCK at {pincode}.")
+        if available:
+            print(f"[RD] ✅ {product['name']} available at {pincode}")
             return (
-                f"[{name}]({product['affiliateLink'] or url})"
-                f"\n📍 Pincode: {pincode}"
-                + (f", 💰 Price: N/A" if not price else "") # Price will not be available
+                f"[{product['name']}]({product['affiliateLink'] or product['url']})\n"
+                f"📍 Pincode: {pincode}"
             )
-        else:
-            error_message = article_error.get("message", "Stock Error")
-            print(f"[RD] ❌ {name} is UNAVAILABLE at {pincode}. (Error: {error_message})")
-            return None
 
-    except requests.exceptions.RequestException as e:
-        print(f"[error] Reliance Digital inventory check failed for {name}: {e}")
+        print(f"[RD] ❌ {product['name']} unavailable at {pincode}")
         return None
+
     except Exception as e:
-        print(f"[error] Reliance Digital check failed for {name} (general): {e}")
+        print(f"[error] Reliance proxy check failed for {product['name']}: {e}")
         return None
 
 # --- iQOO API Checker (FINAL) ---
