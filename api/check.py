@@ -35,14 +35,28 @@ STORE_EMOJIS = {
     "croma": "🟢", "flipkart": "🟣", "amazon": "🟡", 
     "unicorn": "🦄", "iqoo": "📱", "vivo": "🤳", 
     "reliance_digital": "🌐",
-    "vijay_sales": "🛍️" # <-- ADDED
+    "vijay_sales": "🛍️"
 }
+
+# --- MODIFIED: Load Topic IDs from environment variables ---
+STORE_TOPIC_IDS = {
+    "croma": os.getenv("CROMA_TOPIC_ID"),
+    "flipkart": os.getenv("FLIPKART_TOPIC_ID"),
+    "amazon": os.getenv("AMAZON_TOPIC_ID"),
+    "unicorn": os.getenv("UNICORN_TOPIC_ID"),
+    "iqoo": os.getenv("IQOO_TOPIC_ID"),
+    "vivo": os.getenv("VIVO_TOPIC_ID"),
+    "reliance_digital": os.getenv("RELIANCE_TOPIC_ID"),
+    "vijay_sales": os.getenv("VIJAY_SALES_TOPIC_ID")
+}
+# --- END MODIFIED ---
 
 # ==================================
 # 💬 TELEGRAM UTILITIES
 # ==================================
-def send_telegram_message(message, chat_id=TELEGRAM_GROUP_ID):
-    """Sends a single message to a specified chat ID."""
+# --- MODIFIED: Function now accepts an optional thread_id ---
+def send_telegram_message(message, chat_id=TELEGRAM_GROUP_ID, thread_id=None):
+    """Sends a single message to a specified chat ID and optional topic thread."""
     if not TELEGRAM_BOT_TOKEN or not chat_id:
         print(f"[warn] Missing Telegram config for chat {chat_id}.")
         return
@@ -54,13 +68,22 @@ def send_telegram_message(message, chat_id=TELEGRAM_GROUP_ID):
         "parse_mode": "Markdown",
         "disable_web_page_preview": True,
     }
+    
+    # --- MODIFIED: Add message_thread_id to payload if it exists ---
+    if thread_id:
+        try:
+            payload["message_thread_id"] = int(thread_id)
+        except (ValueError, TypeError):
+            print(f"[warn] Invalid thread_id: {thread_id}. Sending to main group.")
+    # --- END MODIFIED ---
 
     try:
         res = requests.post(url, json=payload, timeout=10)
         if res.status_code != 200:
-            print(f"[warn] Telegram send failed to chat {chat_id}: {res.text}")
+            print(f"[warn] Telegram send failed to chat {chat_id} (Thread: {thread_id}): {res.text}")
     except Exception as e:
-        print(f"[error] Telegram message error to chat {chat_id}: {e}")
+        print(f"[error] Telegram message error to chat {chat_id} (Thread: {thread_id}): {e}")
+# --- END MODIFIED ---
 
 # ==================================
 # 🗄️ DATABASE
@@ -492,10 +515,10 @@ def check_vivo_api(product):
 STORE_CHECKERS_MAP = {
     "croma": check_croma_product,
     "flipkart": check_flipkart_product,
-    "amazon": check_amazon_api,                # <-- Uses new API function
-    "reliance_digital": check_reliance_digital_product, # <-- Uses optimized API function
-    "iqoo": check_iqoo_api,                      # <-- Uses new API function
-    "vivo": check_vivo_api,                      # <-- Uses new API function
+    "amazon": check_amazon_api,                
+    "reliance_digital": check_reliance_digital_product, 
+    "iqoo": check_iqoo_api,                      
+    "vivo": check_vivo_api,                      
 }
 
 # ==================================
@@ -536,7 +559,12 @@ def check_store_products(store_type, products_to_check, pincodes):
     if found_count > 0:
         header = f"🔥 *Stock Alert: {store_type.replace('_', ' ').title()}* {STORE_EMOJIS.get(store_type, '📦')}\n\n"
         full_message = header + "\n---\n".join(messages_found)
-        send_telegram_message(full_message, chat_id=TELEGRAM_GROUP_ID)
+        
+        # --- MODIFIED: Get the thread_id for this store ---
+        thread_id = STORE_TOPIC_IDS.get(store_type)
+        send_telegram_message(full_message, chat_id=TELEGRAM_GROUP_ID, thread_id=thread_id)
+        # --- END MODIFIED ---
+        
         print(f"[STORE_SENDER] ✅ Sent alert for {store_type.title()} with {found_count} products.")
     else:
         print(f"[STORE_SENDER] ❌ No stock found for {store_type.title()}. Skipping alert.")
@@ -564,7 +592,12 @@ def check_unicorn_store():
     if found_count > 0:
         header = f"🔥 *Stock Alert: Unicorn* {STORE_EMOJIS.get('unicorn', '📦')}\n\n"
         full_message = header + "\n---\n".join(messages_found)
-        send_telegram_message(full_message, chat_id=TELEGRAM_GROUP_ID)
+        
+        # --- MODIFIED: Get the thread_id for this store ---
+        thread_id = STORE_TOPIC_IDS.get('unicorn')
+        send_telegram_message(full_message, chat_id=TELEGRAM_GROUP_ID, thread_id=thread_id)
+        # --- END MODIFIED ---
+        
         print(f"[STORE_SENDER] ✅ Sent alert for Unicorn with {found_count} products.")
     else:
         print(f"[STORE_SENDER] ❌ No stock found for Unicorn. Skipping alert.")
@@ -658,7 +691,12 @@ def check_vijay_sales_store():
     if found_count > 0:
         header = f"🔥 *Stock Alert: Vijay Sales* {STORE_EMOJIS.get('vijay_sales', '🛍️')}\n\n"
         full_message = header + "\n---\n".join(messages_found)
-        send_telegram_message(full_message, chat_id=TELEGRAM_GROUP_ID)
+        
+        # --- MODIFIED: Get the thread_id for this store ---
+        thread_id = STORE_TOPIC_IDS.get('vijay_sales')
+        send_telegram_message(full_message, chat_id=TELEGRAM_GROUP_ID, thread_id=thread_id)
+        # --- END MODIFIED ---
+        
         print(f"[STORE_SENDER] ✅ Sent alert for Vijay Sales with {found_count} products.")
     else:
         print(f"[STORE_SENDER] ❌ No stock found for Vijay Sales. Skipping alert.")
