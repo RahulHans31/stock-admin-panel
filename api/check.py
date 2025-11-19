@@ -373,26 +373,32 @@ RELIANCE_WORKER_URL = "https://proxyrd.rahulhns41.workers.dev/"
 
 def check_reliance_digital_product(product, pincode):
     """
-    Checks Reliance Digital stock via your Cloudflare Worker.
+    Checks Reliance Digital stock via Cloudflare Worker.
     Worker returns:
-        { "available": true/false, "error_type": "...", "raw": {...} }
+        { "available": true/false, "raw": {...} }
     """
-
-    payload = {
-        "article_id": str(product["productId"]),
-        "pincode": str(pincode)
-    }
-
     try:
-        res = requests.post(RELIANCE_WORKER_URL, json=payload, timeout=20)
+        payload = {
+            "article_id": product["productId"],
+            "pincode": pincode
+        }
+
+        res = requests.post("https://proxyrd.rahulhns41.workers.dev/", json=payload, timeout=25)
 
         if res.status_code != 200:
-            print(f"[RD] ⚠️ Worker error {res.status_code} for {product['name']}")
+            print(f"[RD] ⚠️ Worker error ({res.status_code}) for {product['name']}")
+            print(res.text)
             return None
 
-        data = res.json()
+        try:
+            data = res.json()
+        except Exception as e:
+            print(f"[RD] ❌ JSON parse failed: {e}")
+            print("Body:", res.text)
+            return None
+
+        # True/False from worker
         available = data.get("available", False)
-        error_type = data.get("error_type")
 
         if available:
             print(f"[RD] ✅ {product['name']} available at {pincode}")
@@ -401,13 +407,13 @@ def check_reliance_digital_product(product, pincode):
                 f"📍 Pincode: {pincode}"
             )
 
-        print(f"[RD] ❌ {product['name']} unavailable at {pincode} "
-              f"(error_type={error_type})")
+        print(f"[RD] ❌ {product['name']} unavailable at {pincode}")
         return None
 
     except Exception as e:
         print(f"[error] RD Worker failed for {product['name']}: {e}")
         return None
+
 
 
 # --- iQOO API Checker (FINAL) ---
