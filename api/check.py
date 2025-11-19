@@ -383,7 +383,7 @@ def check_reliance_digital_product(product, pincode):
             "pincode": pincode
         }
 
-        res = requests.post(RELIANCE_PROXY_URL, json=payload, timeout=20)
+        res = requests.post(RELIANCE_PROXY_URL, json=payload, timeout=40)
 
         if res.status_code != 200:
             print(f"[RD] Proxy error {res.status_code} for {product['name']}")
