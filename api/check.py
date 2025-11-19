@@ -369,80 +369,44 @@ def check_amazon_api(product):
         if hasattr(e, 'response') and e.response:
             print(f"[error] Amazon Response: {e.response.text}")
         return None
+RELIANCE_WORKER_URL = "https://proxyrd.rahulhns41.workers.dev/"
 
-# --- OPTIMIZED Reliance Digital API Checker (No Price Scrape) ---
 def check_reliance_digital_product(product, pincode):
     """
-    Direct Reliance Digital API stock checker.
-    Matches the Android logic: 
-        articles -> error -> type
-    If error.type is OutOfStockError or FaultyArticleError → NOT AVAILABLE
-    Else → AVAILABLE
+    Checks Reliance Digital stock via your Cloudflare Worker.
+    Worker returns:
+        { "available": true/false, "error_type": "...", "raw": {...} }
     """
 
-    url = "https://www.reliancedigital.in/ext/raven-api/inventory/multi/articles-v2"
-
-    # Build correct JSON structure
     payload = {
-        "articles": [
-            {
-                "article_id": str(product["productId"]),
-                "custom_json": {},
-                "quantity": 1
-            }
-        ],
-        "phone_number": "0",
-        "pincode": str(pincode),
-        "request_page": "pdp"
-    }
-
-    headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/137.0.0.0 Safari/537.36"
-        ),
-        "Origin": "https://www.reliancedigital.in",
-        "Referer": "https://www.reliancedigital.in/"
+        "article_id": str(product["productId"]),
+        "pincode": str(pincode)
     }
 
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=20)
+        res = requests.post(RELIANCE_WORKER_URL, json=payload, timeout=20)
+
         if res.status_code != 200:
-            print(f"[RD] ⚠️ API failed {res.status_code} for {product['name']}")
+            print(f"[RD] ⚠️ Worker error {res.status_code} for {product['name']}")
             return None
 
         data = res.json()
+        available = data.get("available", False)
+        error_type = data.get("error_type")
 
-        # Extract article response
-        article_list = data.get("data", {}).get("articles", [])
-        if not article_list:
-            print(f"[RD] ⚠️ No article data for {product['name']}")
-            return None
-
-        article = article_list[0]
-        error = article.get("error")
-        error_type = error.get("type") if error else None
-
-        # Types that mean OUT OF STOCK
-        oos_types = ["OutOfStockError", "FaultyArticleError"]
-
-        is_in_stock = not (error_type in oos_types)
-
-        if is_in_stock:
+        if available:
             print(f"[RD] ✅ {product['name']} available at {pincode}")
             return (
                 f"[{product['name']}]({product['affiliateLink'] or product['url']})\n"
                 f"📍 Pincode: {pincode}"
             )
 
-        print(f"[RD] ❌ {product['name']} unavailable at {pincode}")
+        print(f"[RD] ❌ {product['name']} unavailable at {pincode} "
+              f"(error_type={error_type})")
         return None
 
     except Exception as e:
-        print(f"[error] RD API failed for {product['name']}: {e}")
+        print(f"[error] RD Worker failed for {product['name']}: {e}")
         return None
 
 
