@@ -372,46 +372,55 @@ RELIANCE_WORKER_URL = "https://proxyrd.rahulhns41.workers.dev/"
 
 def check_reliance_digital_product(product, pincode):
     """
-    Checks Reliance Digital stock via Cloudflare Worker.
-    Worker returns:
-        { "available": true/false, "raw": {...} }
+    Reliance Digital stock checker using the Cloudflare Worker.
+    This directly matches your verified test script.
     """
-    try:
-        payload = {
-            "article_id": product["productId"],
-            "pincode": pincode
-        }
+    article_id = product["productId"]
 
-        res = requests.post("https://proxyrd.rahulhns41.workers.dev/", json=payload, timeout=25)
+    print("\n==============================")
+    print(f"[RD] Checking: Article ID {article_id} | PIN {pincode}")
+    print("==============================")
+
+    payload = {
+        "article_id": article_id,
+        "pincode": pincode
+    }
+
+    try:
+        res = requests.post(RELIANCE_WORKER_URL, json=payload, timeout=20)
+        print(f"[RD] HTTP Status: {res.status_code}")
 
         if res.status_code != 200:
-            print(f"[RD] ⚠️ Worker error ({res.status_code}) for {product['name']}")
+            print(f"[RD] ❌ Worker returned non-200 status")
             print(res.text)
             return None
 
         try:
             data = res.json()
         except Exception as e:
-            print(f"[RD] ❌ JSON parse failed: {e}")
-            print("Body:", res.text)
+            print(f"[RD] ❌ JSON parsing failed: {e}")
+            print("Raw body:", res.text)
             return None
 
-        # True/False from worker
+        # Debug print (first 300 chars only)
+        print("[RD] Response (trimmed):", json.dumps(data, indent=2)[:300])
+
         available = data.get("available", False)
 
         if available:
-            print(f"[RD] ✅ {product['name']} available at {pincode}")
+            print(f"[RD] ✅ {product['name']} is IN STOCK at {pincode}")
             return (
                 f"[{product['name']}]({product['affiliateLink'] or product['url']})\n"
                 f"📍 Pincode: {pincode}"
             )
 
-        print(f"[RD] ❌ {product['name']} unavailable at {pincode}")
+        print(f"[RD] ❌ {product['name']} is OUT OF STOCK at {pincode}")
         return None
 
     except Exception as e:
-        print(f"[error] RD Worker failed for {product['name']}: {e}")
+        print(f"[RD] ❌ Worker call failed for {product['name']}: {e}")
         return None
+
 
 
 
