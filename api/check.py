@@ -18,7 +18,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # Flipkart Proxy (AlwaysData)
 FLIPKART_PROXY_URL = "https://rknldeals.alwaysdata.net/flipkart_check"
 # Reliance Digital Proxy (AlwaysData)
-RELIANCE_PROXY_URL = "https://rknldeals.alwaysdata.net/reliance_check"
 
 CRON_SECRET = os.getenv("CRON_SECRET")
 
