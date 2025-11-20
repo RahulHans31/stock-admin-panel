@@ -34,7 +34,8 @@ STORE_EMOJIS = {
     "croma": "🟢", "flipkart": "🟣", "amazon": "🟡", 
     "unicorn": "🦄", "iqoo": "📱", "vivo": "🤳", 
     "reliance_digital": "🌐",
-    "vijay_sales": "🛍️"
+    "vijay_sales": "🛍️" ,
+    "sangeetha": "🟠"
 }
 
 # --- MODIFIED: Load Topic IDs from environment variables ---
@@ -46,7 +47,8 @@ STORE_TOPIC_IDS = {
     "iqoo": os.getenv("IQOO_TOPIC_ID"),
     "vivo": os.getenv("VIVO_TOPIC_ID"),
     "reliance_digital": os.getenv("RELIANCE_TOPIC_ID"),
-    "vijay_sales": os.getenv("VIJAY_SALES_TOPIC_ID")
+    "vijay_sales": os.getenv("VIJAY_SALES_TOPIC_ID") ,
+    "sangeetha": os.getenv("SANGEETHA_TOPIC_ID")
 }
 # --- END MODIFIED ---
 
@@ -707,6 +709,95 @@ def check_vijay_sales_store():
     return {"total": total_variants, "found": found_count}
 
 
+
+def check_sangeetha_store():
+    """Checks hardcoded iPhone 17 variants for Sangeetha Mobiles."""
+    
+    PRODUCTS = {
+        19685: "iPhone 17 Sage",
+        19681: "iPhone 17 Lavender",
+        19678: "iPhone 17 White",
+        19680: "iPhone 17 Black",
+        19683: "iPhone 17 Blue",
+    }
+
+    PINCODES = PINCODES_TO_CHECK
+    API_URL = "https://www.sangeethamobiles.com/b/customer/api/v3/product-eta-details"
+
+    HEADERS = {
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json",
+        "origin": "https://www.sangeethamobiles.com",
+        "referer": "https://www.sangeethamobiles.com/",
+        "user-agent": (
+            "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36"
+        ),
+        "number1": "1",
+        "number2": "1",
+    }
+
+    messages_found = []
+    total_variants = len(PRODUCTS)
+
+    for product_id, product_name in PRODUCTS.items():
+        for pincode in PINCODES:
+            payload = {
+                "type": "pwa",
+                "product_id": str(product_id),
+                "pinCode": str(pincode),
+                "user_id": "70638581",
+                "user_location": "AutoCheck",
+            }
+
+            try:
+                res = requests.post(API_URL, json=payload, headers=HEADERS, timeout=15)
+
+                # OOS means product removed → 500 or 404
+                if res.status_code in [500, 404]:
+                    print(f"[SANGEETHA] ❌ {product_name} removed/OOS")
+                    continue
+
+                if res.status_code != 200:
+                    print(f"[SANGEETHA] ❌ Unexpected status {res.status_code}")
+                    continue
+
+                data = res.json()
+                eta = data.get("data", {}).get("product_eta")
+
+                if eta and eta.get("stock_status", "").lower() == "instock":
+                    print(f"[SANGEETHA] ✅ {product_name} IN STOCK at {pincode}")
+                    url = f"https://www.sangeethamobiles.com/product-details/{product_id}"
+                    msg = (
+                        f"[{product_name}]({url})\n"
+                        f"📍 Pincode: {pincode}\n"
+                        f"ETA: {eta.get('eta_title', '')}"
+                    )
+                    messages_found.append(msg)
+                    break
+
+                else:
+                    print(f"[SANGEETHA] ❌ {product_name} OOS")
+
+            except Exception as e:
+                print(f"[error] Sangeetha failed for {product_name}: {e}")
+
+    # Send Telegram message
+    found_count = len(messages_found)
+
+    if found_count > 0:
+        header = f"🔥 *Stock Alert: Sangeetha Mobiles* {STORE_EMOJIS.get('sangeetha', '📱')}\n\n"
+        full_message = header + "\n---\n".join(messages_found)
+        thread_id = STORE_TOPIC_IDS.get("sangeetha")
+        send_telegram_message(full_message, chat_id=TELEGRAM_GROUP_ID, thread_id=thread_id)
+        print(f"[STORE_SENDER] ✅ Sent alert for Sangeetha with {found_count} products.")
+    else:
+        print(f"[STORE_SENDER] ❌ No stock found for Sangeetha.")
+
+    return {"total": total_variants, "found": found_count}
+
+
+
 # ==================================
 # 🧠 MAIN LOGIC (Original - No Bucketing)
 # ==================================
@@ -723,7 +814,7 @@ def main_logic():
     
     # Stores to check concurrently
     # <-- MODIFIED
-    all_store_types = list(STORE_CHECKERS_MAP.keys()) + ["unicorn", "vijay_sales"]
+    all_store_types = list(STORE_CHECKERS_MAP.keys()) + ["unicorn", "vijay_sales" , "sangeetha"]
     tracked_stores = {
         store: {"total": len(products_by_store.get(store, [])), "found": 0}
         for store in all_store_types
@@ -732,6 +823,8 @@ def main_logic():
     # Manually set total for static checkers
     tracked_stores["unicorn"]["total"] = 5 # Fixed variants
     tracked_stores["vijay_sales"]["total"] = 5 # Fixed variants
+    tracked_stores["sangeetha"]["total"] = 5  # 5 variants
+
     
     total_tracked = sum(data['total'] for data in tracked_stores.values())
 
@@ -756,6 +849,9 @@ def main_logic():
         
         # Submit Vijay Sales task separately <-- ADDED
         future_to_store[executor.submit(check_vijay_sales_store)] = "vijay_sales"
+
+        future_to_store[executor.submit(check_sangeetha_store)] = "sangeetha"
+
         
         # Collect results (counts only)
         for future in concurrent.futures.as_completed(future_to_store):
