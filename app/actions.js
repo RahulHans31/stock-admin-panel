@@ -1,299 +1,176 @@
 'use server';
 
-// NOTE: You must install cheerio: npm install cheerio
 import * as cheerio from 'cheerio';
 import { prisma } from '@/lib/prisma';
 import { revalidatePath } from 'next/cache';
 
 /**
- * Fetches the Reliance Digital product page and scrapes the internal Article ID (Item Code).
- * This replaces the need for the Python scraper in this case.
- * @param {string} url - The full Reliance Digital product URL.
- * @returns {Promise<string|null>} The internal 9-digit Article ID string or null.
+ * Reliance Digital scraper — unchanged
  */
 async function getRelianceDigitalArticleId(url) {
     try {
         const response = await fetch(url, {
             method: 'GET',
             headers: {
-                // Using a mobile-like user agent to ensure correct page structure is received
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142 Mobile Safari/537.36',
             },
         });
-
-        if (!response.ok) {
-            console.error(`[RD Scraper] HTTP error fetching ${url}: ${response.status}`);
-            return null;
-        }
-
+        if (!response.ok) return null;
         const html = await response.text();
         const $ = cheerio.load(html);
-
         let articleId = null;
 
-        // 1. Target the <li> in the specifications section that lists "Item Code"
         $('li.specifications-list').each((i, el) => {
             const label = $(el).find('span:first-child').text().trim();
             if (label === 'Item Code') {
-                // The value is nested inside the span with class 'specifications-list--right' and then within a <ul>
                 articleId = $(el).find('.specifications-list--right ul').text().trim();
-                return false; // Stop the loop once the ID is found
+                return false;
             }
         });
 
-        // 2. Fallback: Check the og:image URL in metadata (less reliable but often present)
         if (!articleId) {
-            const imageMeta = $('meta[property="og:image"]').attr('content');
-            if (imageMeta) {
-                // Use regex to find the 9-digit number right before '-i-1' in the filename
-                const match = imageMeta.match(/-(\d{9})-i-1/);
-                if (match) {
-                    articleId = match[1];
-                }
-            }
+            const meta = $('meta[property="og:image"]').attr('content');
+            const match = meta?.match(/-(\d{9})-i-1/);
+            if (match) articleId = match[1];
         }
 
         return articleId;
-    } catch (error) {
-        console.error("[RD Scraper] Scraping failed:", error.message);
+    } catch {
         return null;
     }
 }
 
-
-// This function parses the URL you paste in
+/**
+ * MASTER URL PARSER + ID/NAME BUILDER
+ */
 async function getProductDetails(url, partNumber) {
     try {
         const parsedUrl = new URL(url);
 
-        // --- NEW VIVO LOGIC (FIXED) ---
+        /** -------------------- VIVO -------------------- */
         if (parsedUrl.hostname.includes('vivo.com') && !parsedUrl.hostname.includes('iqoo.com')) {
-            const pathParts = parsedUrl.pathname.split('/').filter(p => p.length > 0);
-            const pid = pathParts[pathParts.length - 1]; 
-
-            if (!pid) throw new Error('Could not find a valid product ID in the Vivo URL.');
-
-            // Use the second-to-last part for the name, falling back to a default if it's missing or just 'product'
-            const nameSegment = pathParts.length >= 2 ? pathParts[pathParts.length - 2] : 'Vivo Product';
-            const rawName = (nameSegment === 'product' || nameSegment.match(/^\d+$/) ? 'Vivo Product' : nameSegment);
-            
-            const name = rawName
-                .replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase()).slice(0, 50) + '...';
-
-            return {
-                name: `(Vivo) ${name}`,
-                productId: pid,
-                storeType: 'vivo',
-                partNumber: null
-            };
+            const parts = parsedUrl.pathname.split('/').filter(Boolean);
+            const pid = parts.pop();
+            const base = parts.pop() || 'Vivo Product';
+            const name = '(Vivo) ' + base.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).slice(0, 50);
+            return { name, productId: pid, storeType: 'vivo', partNumber: null };
         }
-        // --- OPPO LOGIC (SKU SELECTION REQUIRED) ---
-if (parsedUrl.hostname.includes('oppo.com')) {
-    const path = parsedUrl.pathname;
-    const productCodeMatch = path.match(/\.P\.(P\d+)/i);   // extract P1110070
-    if (!productCodeMatch) throw new Error("Could not extract OPPO product code from URL.");
-    const productCode = productCodeMatch[1];
 
-    // Fetch OPPO variants
-    const OPPO_API = "https://opsg-gateway-in.oppo.com/v2/api/rest/mall/product/detail/fetch";
-    const payload = {
-        productCode,
-        userGroupName: "",
-        storeViewCode: "in",
-        configModule: 3,
-        settleChannel: 3
-    };
-    const resp = await fetch(OPPO_API, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "client-version": "13.0.0.0",
-            "platform": "web",
-            "language": "en-IN",
-            "User-Agent": "Mozilla/5.0",
-            "Origin": "https://www.oppo.com",
-            "Referer": url
-        },
-        body: JSON.stringify(payload)
-    });
-
-    const data = await resp.json();
-    if (!data.success || !data.data) throw new Error("OPPO API returned no data.");
-
-    const products = data.data.products || [];
-
-    // Return ALL SKUs so UI can show a dropdown
-    const variants = products.map(p => ({
-        sku: p.skuCode,
-        name: p.name
-    }));
-
-    return {
-        requiresVariantSelection: true,
-        storeType: "oppo",
-        url,
-        productCode,
-        variants
-    };
-}
-
-        // --- NEW IQOO LOGIC (FIXED) ---
+        /** -------------------- IQOO -------------------- */
         if (parsedUrl.hostname.includes('iqoo.com')) {
-            const pathParts = parsedUrl.pathname.split('/').filter(p => p.length > 0);
-            const pid = pathParts[pathParts.length - 1]; // e.g., '2057' or 'iqoo-z7-pro'
-
-            if (!pid) throw new Error('Could not find a valid product ID in the iQOO URL.');
-
-            // Use the second-to-last part for the name, falling back to a default if it's missing or just 'product'
-            const nameSegment = pathParts.length >= 2 ? pathParts[pathParts.length - 2] : 'iQOO Product';
-            const rawName = (nameSegment === 'product' || nameSegment.match(/^\d+$/) ? 'iQOO Product' : nameSegment);
-
-            const name = rawName
-                .replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase()).slice(0, 50) + '...';
-
-            return {
-                name: `(iQOO) ${name}`,
-                productId: pid,
-                storeType: 'iqoo',
-                partNumber: null
-            };
+            const parts = parsedUrl.pathname.split('/').filter(Boolean);
+            const pid = parts.pop();
+            const base = parts.pop() || 'iQOO Product';
+            const name = '(iQOO) ' + base.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).slice(0, 50);
+            return { name, productId: pid, storeType: 'iqoo', partNumber: null };
         }
 
-        // 🟢 --- RELIANCE DIGITAL LOGIC (WITH SCRAPING) ---
+        /** ---------------- RELIANCE DIGITAL ---------------- */
         if (parsedUrl.hostname.includes('reliancedigital.in')) {
-            // 1. SCALING ACTION: Scrape the actual internal Article ID
-            const internalArticleId = await getRelianceDigitalArticleId(url);
-            
-            if (!internalArticleId) {
-                throw new Error('Could not extract the internal Item Code from the Reliance Digital page.');
-            }
-
-            // 2. Extract slug and name for database
-            const pathParts = parsedUrl.pathname.split('/').filter(p => p.length > 0);
-            const slug = pathParts[pathParts.length - 1]; 
-            const nameBase = pathParts.length > 1 ? pathParts[pathParts.length - 2] : slug;
-            const name = nameBase.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase()).slice(0, 50) + '...';
-
-            return { 
-                name: `(R. Digital) ${name}`, 
-                // Store the actual scraped internal Article ID for API tracking
-                productId: internalArticleId, 
-                storeType: 'reliance_digital', 
-                partNumber: slug 
-            };
+            const internalId = await getRelianceDigitalArticleId(url);
+            if (!internalId) throw new Error("Unable to scrape Reliance Digital Item Code");
+            const slug = parsedUrl.pathname.split('/').filter(Boolean).pop();
+            const base = parsedUrl.pathname.split('/').filter(Boolean).slice(-2, -1)[0];
+            const name = `(R. Digital) ${base.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`;
+            return { name, productId: internalId, storeType: 'reliance_digital', partNumber: slug };
         }
 
-        // --- NEW FLIPKART LOGIC --- (UNCHANGED)
+        /** -------------------- FLIPKART -------------------- */
         if (parsedUrl.hostname.includes('flipkart.com')) {
             const pid = parsedUrl.searchParams.get('pid');
-            if (!pid) {
-                throw new Error('Flipkart URL is missing a "pid" query parameter.');
-            }
-            const name = (parsedUrl.pathname.split('/')[1] || 'Flipkart Product')
-                .replace(/-/g, ' ').slice(0, 50) + '...';
-            return {
-                name: `(Flipkart) ${name}`,
-                productId: pid,
-                storeType: 'flipkart',
-                partNumber: null
-            };
+            if (!pid) throw new Error("Flipkart PID missing in URL");
+            const name = `(Flipkart) ${parsedUrl.pathname.split('/')[1].replace(/-/g, ' ')}`;
+            return { name, productId: pid, storeType: 'flipkart', partNumber: null };
         }
 
-        // --- AMAZON LOGIC --- (UNCHANGED)
+        /** -------------------- AMAZON -------------------- */
         if (parsedUrl.hostname.includes('amazon.in')) {
-            const pathParts = parsedUrl.pathname.split('/');
-            const dpIndex = pathParts.indexOf('dp');
-
-            if (dpIndex === -1 || !pathParts[dpIndex + 1]) {
-                throw new Error('Could not find a valid ASIN (e.g., /dp/B0CX59H5W7) in the Amazon URL.');
-            }
-
-            const asin = pathParts[dpIndex + 1];
-            const name = (pathParts[dpIndex - 1] || 'Amazon Product')
-                .replace(/-/g, ' ').slice(0, 50) + '...';
-
-            return {
-                name: `(Amazon) ${name}`,
-                productId: asin,
-                storeType: 'amazon',
-                partNumber: null
-            };
+            const parts = parsedUrl.pathname.split('/');
+            const dpIndex = parts.indexOf('dp');
+            if (dpIndex === -1 || !parts[dpIndex + 1]) throw new Error("Invalid Amazon /dp/ASIN URL");
+            const asin = parts[dpIndex + 1];
+            const name = `(Amazon) ${(parts[dpIndex - 1] || 'Amazon Product').replace(/-/g, ' ')}`;
+            return { name, productId: asin, storeType: 'amazon', partNumber: null };
         }
 
-        // --- APPLE LOGIC --- (UNCHANGED)
+        /** -------------------- APPLE -------------------- */
         if (parsedUrl.hostname.includes('apple.com')) {
-            if (!partNumber) {
-                throw new Error('Apple products require a Part Number.');
-            }
-            const name = (parsedUrl.pathname.split('/')[3] || 'Apple Product')
-                .replace(/-/g, ' ').slice(0, 50) + '...';
-            return {
-                name: `(Apple) ${name}`,
-                productId: partNumber,
-                storeType: 'apple',
-                partNumber: partNumber
-            };
+            if (!partNumber) throw new Error("Apple requires Part Number");
+            const title = parsedUrl.pathname.split('/')[3] || 'Apple Product';
+            const name = `(Apple) ${title.replace(/-/g, ' ')}`;
+            return { name, productId: partNumber, storeType: 'apple', partNumber };
         }
 
-        // --- CROMA LOGIC --- (UNCHANGED)
+        /** -------------------- CROMA -------------------- */
         if (parsedUrl.hostname.includes('croma.com')) {
-            const pathParts = parsedUrl.pathname.split('/');
-            const pid = pathParts[pathParts.length - 1];
-            if (!pid || !/^\d+$/.test(pid)) throw new Error('Could not find a valid product ID in the Croma URL.');
-            const name = (pathParts[1] || 'Croma Product')
-                .replace(/-/g, ' ').slice(0, 50) + '...';
+            const parts = parsedUrl.pathname.split('/');
+            const pid = parts.pop();
+            if (!/^\d+$/.test(pid)) throw new Error("Invalid Croma PID");
+            const name = `(Croma) ${parts[1].replace(/-/g, ' ')}`;
+            return { name, productId: pid, storeType: 'croma', partNumber: null };
+        }
+
+        /** ----------------------------------------------------------- */
+        /** 🟢 NEW — OPPO — SKU logic (variant already selected in UI)  */
+        /** ----------------------------------------------------------- */
+        if (parsedUrl.hostname.includes('oppo.com')) {
+            // UI already supplied the SKU via 'partNumber' / productId
+            if (!partNumber) throw new Error("Please select OPPO variant first");
             return {
-                name: `(Croma) ${name}`,
-                productId: pid,
-                storeType: 'croma',
-                partNumber: null
+                name: `(OPPO) Product`, // name replaced with real variant name after saving
+                productId: partNumber, // SKU CODE
+                storeType: 'oppo',
+                partNumber
             };
         }
 
-        // --- UPDATED ERROR MESSAGE --- (UNCHANGED)
-        throw new Error('Sorry, only Croma, Apple, Amazon, Flipkart, Vivo, iQOO, and Reliance Digital URLs are supported.');
-
-    } catch (error) {
-        return { error: error.message };
+        /** ---------------- UNSUPPORTED ---------------- */
+        throw new Error("Only Croma, Apple, Amazon, Flipkart, Vivo, iQOO, Reliance Digital, and OPPO URLs are supported.");
+    } catch (err) {
+        return { error: err.message };
     }
 }
 
-// Server Action to add a product
+/**
+ * Add product to database
+ */
 export async function addProduct(formData) {
     const url = formData.get('url');
-    const partNumber = formData.get('partNumber');
-    const affiliateLink = formData.get('affiliateLink');
+    const partNumber = formData.get('partNumber') || null;
+    const affiliateLink = formData.get('affiliateLink') || null;
 
     if (!url) return { error: 'URL is required.' };
 
-    // NOTE: AWAITING the async function call here!
     const details = await getProductDetails(url, partNumber);
     if (details.error) return { error: details.error };
 
     try {
-        await prisma.product.create({
+        const saved = await prisma.product.create({
             data: {
                 name: details.name,
-                url: url,
+                url,
                 productId: details.productId,
                 storeType: details.storeType,
                 partNumber: details.partNumber,
-                affiliateLink: affiliateLink || null,
-            },
+                affiliateLink
+            }
         });
+
         revalidatePath('/');
-        return { success: `Added ${details.name}` };
-    } catch (error) {
-        console.error(error);
-        return { error: 'Failed to add product. Is it a duplicate?' };
+
+        return { success: `Added ${saved.name}`, product: saved };
+    } catch (err) {
+        return { error: "Failed to add product — possible duplicate?" };
     }
 }
 
-// deleteProduct (UNCHANGED)
+/**
+ * Delete Product
+ */
 export async function deleteProduct(id) {
     if (!id) return;
     try {
-        await prisma.product.delete({ where: { id: id } });
+        await prisma.product.delete({ where: { id } });
         revalidatePath('/');
-    } catch (error) {}
+    } catch {}
 }
