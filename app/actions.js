@@ -87,6 +87,55 @@ async function getProductDetails(url, partNumber) {
                 partNumber: null
             };
         }
+        // --- OPPO LOGIC (SKU SELECTION REQUIRED) ---
+if (parsedUrl.hostname.includes('oppo.com')) {
+    const path = parsedUrl.pathname;
+    const productCodeMatch = path.match(/\.P\.(P\d+)/i);   // extract P1110070
+    if (!productCodeMatch) throw new Error("Could not extract OPPO product code from URL.");
+    const productCode = productCodeMatch[1];
+
+    // Fetch OPPO variants
+    const OPPO_API = "https://opsg-gateway-in.oppo.com/v2/api/rest/mall/product/detail/fetch";
+    const payload = {
+        productCode,
+        userGroupName: "",
+        storeViewCode: "in",
+        configModule: 3,
+        settleChannel: 3
+    };
+    const resp = await fetch(OPPO_API, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "client-version": "13.0.0.0",
+            "platform": "web",
+            "language": "en-IN",
+            "User-Agent": "Mozilla/5.0",
+            "Origin": "https://www.oppo.com",
+            "Referer": url
+        },
+        body: JSON.stringify(payload)
+    });
+
+    const data = await resp.json();
+    if (!data.success || !data.data) throw new Error("OPPO API returned no data.");
+
+    const products = data.data.products || [];
+
+    // Return ALL SKUs so UI can show a dropdown
+    const variants = products.map(p => ({
+        sku: p.skuCode,
+        name: p.name
+    }));
+
+    return {
+        requiresVariantSelection: true,
+        storeType: "oppo",
+        url,
+        productCode,
+        variants
+    };
+}
 
         // --- NEW IQOO LOGIC (FIXED) ---
         if (parsedUrl.hostname.includes('iqoo.com')) {
