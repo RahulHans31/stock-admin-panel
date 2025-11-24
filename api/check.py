@@ -31,12 +31,14 @@ AMAZON_SERVICE = "ProductAdvertisingAPI"
 AMAZON_ENDPOINT = "https://webservices.amazon.in/paapi5/getitems"
 
 STORE_EMOJIS = {
-    "croma": "🟢", "flipkart": "🟣", "amazon": "🟡", 
-    "unicorn": "🦄", "iqoo": "📱", "vivo": "🤳", 
+    "croma": "🟢", "flipkart": "🟣", "amazon": "🟡",
+    "unicorn": "🦄", "iqoo": "📱", "vivo": "🤳",
     "reliance_digital": "🌐",
-    "vijay_sales": "🛍️" ,
-    "sangeetha": "🟠"
+    "vijay_sales": "🛍️",
+    "sangeetha": "🟠",
+    "oppo": "🔵"
 }
+
 
 # --- MODIFIED: Load Topic IDs from environment variables ---
 STORE_TOPIC_IDS = {
@@ -47,9 +49,11 @@ STORE_TOPIC_IDS = {
     "iqoo": os.getenv("IQOO_TOPIC_ID"),
     "vivo": os.getenv("VIVO_TOPIC_ID"),
     "reliance_digital": os.getenv("RELIANCE_TOPIC_ID"),
-    "vijay_sales": os.getenv("VIJAY_SALES_TOPIC_ID") ,
-    "sangeetha": os.getenv("SANGEETHA_TOPIC_ID")
+    "vijay_sales": os.getenv("VIJAY_SALES_TOPIC_ID"),
+    "sangeetha": os.getenv("SANGEETHA_TOPIC_ID"),
+    "oppo": os.getenv("OPPO_TOPIC_ID"),
 }
+
 # --- END MODIFIED ---
 
 # ==================================
@@ -510,6 +514,47 @@ def check_vivo_api(product):
         print(f"[error] Vivo API check failed for {product_id}: {e}")
         return None
 
+def check_oppo_api(product):
+    """Checks OPPO stock for exact SKU."""
+    sku = product["productId"]
+    print(f"[OPPO] Checking SKU: {sku}")
+
+    url = "https://opsg-gateway-in.oppo.com/v2/api/rest/mall/product/sku/settle"
+    payload = {
+        "itemId": "",  # oppo does not need itemId when SKU provided
+        "skuCode": sku,
+        "storeViewCode": "in",
+        "configModule": 3,
+        "settleChannel": 3
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "client-version": "13.0.0.0",
+        "platform": "web",
+        "language": "en-IN",
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        data = res.json().get("data", {})
+        available = data.get("inStock", False)
+        price = data.get("price", {}).get("finalPrice")
+
+        if available:
+            print(f"[OPPO] ✅ {product['name']} IN STOCK")
+            return (
+                f"[{product['name']}]({product['affiliateLink'] or product['url']})\n"
+                + (f"💰 Price: ₹{price}\n" if price else "")
+            )
+
+        print(f"[OPPO] ❌ {product['name']} OUT OF STOCK")
+        return None
+
+    except Exception as e:
+        print("[error] OPPO API failed:", e)
+        return None
 
 # ==================================
 # 🗺️ STORE CHECKER MAP (UPDATED)
@@ -522,7 +567,8 @@ STORE_CHECKERS_MAP = {
     "amazon": check_amazon_api,                
     "reliance_digital": check_reliance_digital_product, 
     "iqoo": check_iqoo_api,                      
-    "vivo": check_vivo_api,                      
+    "vivo": check_vivo_api, 
+    "oppo": check_oppo_api ,
 }
 
 # ==================================
