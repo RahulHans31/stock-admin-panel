@@ -514,48 +514,49 @@ def check_vivo_api(product):
         print(f"[error] Vivo API check failed for {product_id}: {e}")
         return None
 
-def check_oppo_api(product):
-    """Checks OPPO stock for exact SKU."""
+# --- MODIFIED: OPPO Serviceability Checker (Uses SKU + Pincode) ---
+def check_oppo_product(product, pincode):
+    """Checks OPPO serviceability for exact SKU at a specific pincode."""
     sku = product["productId"]
-    print(f"[OPPO] Checking SKU: {sku}")
+    print(f"[OPPO] Checking SKU: {sku} at Pincode: {pincode}")
 
-    url = "https://opsg-gateway-in.oppo.com/v2/api/rest/mall/product/sku/settle"
     payload = {
-        "itemId": "",  # oppo does not need itemId when SKU provided
-        "skuCode": sku,
+        "pincode": str(pincode),
+        "skuCodes": [sku],
         "storeViewCode": "in",
         "configModule": 3,
         "settleChannel": 3
     }
 
-    headers = {
-        "Content-Type": "application/json",
-        "client-version": "13.0.0.0",
-        "platform": "web",
-        "language": "en-IN",
-        "User-Agent": "Mozilla/5.0"
-    }
-
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        data = res.json().get("data", {})
-        available = data.get("inStock", False)
-        price = data.get("price", {}).get("finalPrice")
-
-        if available:
-            print(f"[OPPO] ✅ {product['name']} IN STOCK")
+        # Use the dedicated serviceability URL and headers
+        res = requests.post(OPPO_SERVICEABILITY_URL, json=payload, headers=OPPO_BASE_HEADERS, timeout=15)
+        res.raise_for_status()
+        data = res.json()
+        
+        products_data = data.get("data", {}).get("products", [])
+        
+        is_available = False
+        for product_data in products_data:
+            if product_data.get("skuCode") == sku:
+                # deliveryOnlineSupport is true if in stock AND deliverable
+                is_available = product_data.get("deliveryOnlineSupport", False)
+                break
+        
+        if is_available:
+            print(f"[OPPO] ✅ {product['name']} deliverable to {pincode}")
             return (
                 f"[{product['name']}]({product['affiliateLink'] or product['url']})\n"
-                + (f"💰 Price: ₹{price}\n" if price else "")
+                f"📍 Pincode: {pincode}"
             )
 
-        print(f"[OPPO] ❌ {product['name']} OUT OF STOCK")
+        print(f"[OPPO] ❌ {product['name']} not deliverable at {pincode}")
         return None
 
     except Exception as e:
-        print("[error] OPPO API failed:", e)
+        print(f"[error] OPPO serviceability check failed for {sku} at {pincode}: {e}")
         return None
-
+        
 # ==================================
 # 🗺️ STORE CHECKER MAP (UPDATED)
 # ==================================
@@ -568,7 +569,7 @@ STORE_CHECKERS_MAP = {
     "reliance_digital": check_reliance_digital_product, 
     "iqoo": check_iqoo_api,                      
     "vivo": check_vivo_api, 
-    "oppo": check_oppo_api ,
+    "oppo": check_oppo_product ,
 }
 
 # ==================================
@@ -589,7 +590,7 @@ def check_store_products(store_type, products_to_check, pincodes):
     messages_found = []
     
     # Stores where we check against all pincodes
-    if store_type in ["croma", "flipkart", "reliance_digital"]:
+    if store_type in ["croma", "flipkart", "reliance_digital" , "oppo"]:
         for product in products_to_check:
             for pincode in pincodes:
                 message = checker_func(product, pincode)
