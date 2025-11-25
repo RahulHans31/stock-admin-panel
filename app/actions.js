@@ -38,6 +38,14 @@ async function getRelianceDigitalArticleId(url) {
   }
 }
 
+/* ---------------- NEW: JIOMART ID EXTRACTOR ---------------- */
+function getJiomartProductId(url) {
+  // Jiomart URL pattern: /p/<category>/<product-name>/<product-id>
+  const match = url.match(/\/p\/[^\/]+\/[^\/]+\/(\d+)/i);
+  // Example: https://www.jiomart.com/p/fashion/xyz/491551429 -> extracts 491551429
+  return match ? match[1] : null;
+}
+
 /* ---------------- NEW: OPPO VARIANT FETCH (SERVER ACTION) ---------------- */
 export async function fetchOppoVariantsServer(url) {
   try {
@@ -81,6 +89,16 @@ export async function fetchOppoVariantsServer(url) {
 async function getProductDetails(url, partNumber) {
   try {
     const u = new URL(url);
+
+    /* Jiomart */
+    if (u.hostname.includes('jiomart.com')) {
+      const internalId = getJiomartProductId(url);
+      if (!internalId) throw new Error('Could not extract Jiomart Product ID');
+
+      const parts = u.pathname.split('/').filter(Boolean);
+      const name = `(Jiomart) ${parts[2].replace(/-/g, ' ')}`; // Use product name part
+      return { name, productId: internalId, storeType: 'jiomart', partNumber: null };
+    }
 
     /* Vivo */
     if (u.hostname.includes('vivo.com') && !u.hostname.includes('iqoo.com')) {
