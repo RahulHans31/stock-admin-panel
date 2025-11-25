@@ -336,7 +336,7 @@ def check_amazon_api(product):
 
     algorithm = 'AWS4-HMAC-SHA256'
     credential_scope = f'{date_stamp}/{AMAZON_REGION}/{AMAZON_SERVICE}/aws4_request'
-    canonical_request_hash = hashlib.sha512(canonical_request.encode('utf-8')).hexdigest()
+    canonical_request_hash = hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()
     
     string_to_sign = (
         f'{algorithm}\n'
@@ -603,20 +603,22 @@ def check_jiomart_product(product, pincode):
 
         data = r.get("data", {})
         
-        # Determine availability based on availability_status ('A' for Available)
-        in_stock = (data.get("availability_status") == "A")
-        stock_qty = data.get("stock_qty", 0)
+        # FIX: Rely primarily on availability_status == "A" for stock/deliverability
+        is_available_and_deliverable = (data.get("availability_status") == "A")
+        stock_qty = data.get("stock_qty")
         price = data.get("selling_price")
 
-        if in_stock and stock_qty > 0:
-            print(f"[JIOMART] ✅ {product['name']} is IN STOCK ({stock_qty} units) at {pincode}")
+        if is_available_and_deliverable:
+            # Optionally include stock_qty if available, but don't fail if it's zero
+            stock_info = f" ({stock_qty} units)" if stock_qty is not None and stock_qty > 0 else ""
+            print(f"[JIOMART] ✅ {product['name']} is IN STOCK{stock_info} at {pincode}")
             return (
                 f"[{product['name']}]({product['affiliateLink'] or product['url']})\n"
                 f"📍 Pincode: {pincode}"
                 + (f", 💰 Price: ₹{price}" if price else "")
             )
         else:
-            print(f"[JIOMART] ❌ {product['name']} OUT OF STOCK at {pincode}")
+            print(f"[JIOMART] ❌ {product['name']} OUT OF STOCK or UNDELIVERABLE at {pincode}")
             return None
 
     except Exception as e:
@@ -962,8 +964,7 @@ def main_logic():
                 future_to_store[future] = store_type
 
         # Submit static store tasks (PAUSED)
-        # Note: check_unicorn_store(), check_vijay_sales_store(), and check_sangeetha_store() 
-        # are commented out below to pause their execution as requested.
+        # We explicitly skip the submission of the hardcoded checkers here
         
         # future_to_store[executor.submit(check_unicorn_store)] = "unicorn"
         # future_to_store[executor.submit(check_vijay_sales_store)] = "vijay_sales"
