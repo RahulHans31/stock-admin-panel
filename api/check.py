@@ -8,8 +8,8 @@ import hmac     # Added for Amazon API
 # ==================================
 # 🔧 CONFIGURATION
 # ==================================
-TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID") 
-PINCODES_STR = os.getenv("PINCODES_TO_CHECK", "110016") 
+TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")
+PINCODES_STR = os.getenv("PINCODES_TO_CHECK", "110016")
 PINCODES_TO_CHECK = [p.strip() for p in PINCODES_STR.split(',') if p.strip()]
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -21,8 +21,18 @@ FLIPKART_PROXY_URL = "https://my-flipkart-worker.rahulhns41.workers.dev/flipkart
 
 CRON_SECRET = os.getenv("CRON_SECRET")
 
+# --- Amazon PAAPI Credentials ---
+AMAZON_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
+AMAZON_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AMAZON_PARTNER_TAG = os.getenv("AMAZON_PARTNER_TAG")
+AMAZON_HOST = "webservices.amazon.in"
+AMAZON_REGION = "eu-west-1"
+AMAZON_SERVICE = "ProductAdvertisingAPI"
+AMAZON_ENDPOINT = "https://webservices.amazon.in/paapi5/getitems"
+
+# --- OPPO Configuration ---
+# New API endpoint for serviceability check
 OPPO_SERVICEABILITY_URL = "https://opsg-gateway-in.oppo.com/v2/api/rest/mall/product/retail/store/fetch"
-# Base headers for consistency
 OPPO_BASE_HEADERS = {
     "Content-Type": "application/json",
     "client-version": "13.0.0.0",
@@ -35,22 +45,14 @@ OPPO_BASE_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
 }
 
-# --- Amazon PAAPI Credentials ---
-AMAZON_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
-AMAZON_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AMAZON_PARTNER_TAG = os.getenv("AMAZON_PARTNER_TAG")
-AMAZON_HOST = "webservices.amazon.in"
-AMAZON_REGION = "eu-west-1"
-AMAZON_SERVICE = "ProductAdvertisingAPI"
-AMAZON_ENDPOINT = "https://webservices.amazon.in/paapi5/getitems"
-
 STORE_EMOJIS = {
     "croma": "🟢", "flipkart": "🟣", "amazon": "🟡",
     "unicorn": "🦄", "iqoo": "📱", "vivo": "🤳",
     "reliance_digital": "🌐",
     "vijay_sales": "🛍️",
     "sangeetha": "🟠",
-    "oppo": "🔵"
+    "oppo": "🔵",
+    "jiomart": "🛍️", # Added Jiomart emoji
 }
 
 
@@ -66,6 +68,7 @@ STORE_TOPIC_IDS = {
     "vijay_sales": os.getenv("VIJAY_SALES_TOPIC_ID"),
     "sangeetha": os.getenv("SANGEETHA_TOPIC_ID"),
     "oppo": os.getenv("OPPO_TOPIC_ID"),
+    "jiomart": os.getenv("JIOMART_TOPIC_ID"), # Added Jiomart topic ID
 }
 
 # --- END MODIFIED ---
@@ -109,7 +112,7 @@ def send_telegram_message(message, chat_id=TELEGRAM_GROUP_ID, thread_id=None):
 # ==================================
 def get_products_from_db():
     print("[info] Connecting to database...")
-    conn = psycopg2.connect(DATABASE_URL) 
+    conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
     cursor.execute("SELECT name, url, product_id, store_type, affiliate_link FROM products")
     products = cursor.fetchall()
@@ -333,7 +336,7 @@ def check_amazon_api(product):
 
     algorithm = 'AWS4-HMAC-SHA256'
     credential_scope = f'{date_stamp}/{AMAZON_REGION}/{AMAZON_SERVICE}/aws4_request'
-    canonical_request_hash = hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()
+    canonical_request_hash = hashlib.sha512(canonical_request.encode('utf-8')).hexdigest()
     
     string_to_sign = (
         f'{algorithm}\n'
@@ -570,7 +573,58 @@ def check_oppo_product(product, pincode):
     except Exception as e:
         print(f"[error] OPPO serviceability check failed for {sku} at {pincode}: {e}")
         return None
+
+# --- NEW: Jiomart Checker ---
+def check_jiomart_product(product, pincode):
+    """Checks Jiomart stock using the direct API endpoint for the given product ID and pincode."""
+    product_id = product["productId"]
+    print(f"[JIOMART] Checking Product: {product_id} at Pincode: {pincode}")
+
+    url = f"https://www.jiomart.com/catalog/productdetails/get/{product_id}"
+    
+    # Jiomart uses the 'pin' in the header for the check
+    headers = {
+        "accept": "application/json, text/javascript, */*; q=0.01",
+        "user-agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+        "x-requested-with": "XMLHttpRequest",
+        "pin": str(pincode),
+        # Use the stored URL for a more accurate referrer, falling back to a generic one
+        "referer": product['url'] or f"https://www.jiomart.com/p/generic/{product_id}" 
+    }
+
+    try:
+        res = requests.get(url, headers=headers, timeout=15)
+        res.raise_for_status()
+        r = res.json()
+
+        if r.get("status") != "success":
+            print(f"[JIOMART] ❌ {product['name']} failed API response: {r.get('status')}")
+            return None
+
+        data = r.get("data", {})
         
+        # Determine availability based on availability_status ('A' for Available)
+        in_stock = (data.get("availability_status") == "A")
+        stock_qty = data.get("stock_qty", 0)
+        price = data.get("selling_price")
+
+        if in_stock and stock_qty > 0:
+            print(f"[JIOMART] ✅ {product['name']} is IN STOCK ({stock_qty} units) at {pincode}")
+            return (
+                f"[{product['name']}]({product['affiliateLink'] or product['url']})\n"
+                f"📍 Pincode: {pincode}"
+                + (f", 💰 Price: ₹{price}" if price else "")
+            )
+        else:
+            print(f"[JIOMART] ❌ {product['name']} OUT OF STOCK at {pincode}")
+            return None
+
+    except Exception as e:
+        print(f"[error] Jiomart check failed for {product_id} at {pincode}: {e}")
+        return None
+# --- END NEW JIOMART CHECKER ---
+
+
 # ==================================
 # 🗺️ STORE CHECKER MAP (UPDATED)
 # ==================================
@@ -583,7 +637,8 @@ STORE_CHECKERS_MAP = {
     "reliance_digital": check_reliance_digital_product, 
     "iqoo": check_iqoo_api,                      
     "vivo": check_vivo_api, 
-    "oppo": check_oppo_product ,
+    "oppo": check_oppo_product,
+    "jiomart": check_jiomart_product, # Added Jiomart
 }
 
 # ==================================
@@ -604,7 +659,7 @@ def check_store_products(store_type, products_to_check, pincodes):
     messages_found = []
     
     # Stores where we check against all pincodes
-    if store_type in ["croma", "flipkart", "reliance_digital" , "oppo"]:
+    if store_type in ["croma", "flipkart", "reliance_digital", "oppo", "jiomart"]:
         for product in products_to_check:
             for pincode in pincodes:
                 message = checker_func(product, pincode)
@@ -612,7 +667,7 @@ def check_store_products(store_type, products_to_check, pincodes):
                     messages_found.append(message)
                     break # Stop checking other pincodes once stock is found
     else:
-        # Stores with no pincode (Amazon, iQOO, Vivo)
+        # Stores with no pincode (Amazon, iQOO, Vivo, etc.)
         for product in products_to_check:
             message = checker_func(product)
             if message:
@@ -874,17 +929,18 @@ def main_logic():
     }
     
     # Stores to check concurrently
-    # <-- MODIFIED
+    # The dictionary keys must contain all store types, including static ones, for the summary.
     all_store_types = list(STORE_CHECKERS_MAP.keys()) + ["unicorn", "vijay_sales" , "sangeetha"]
     tracked_stores = {
         store: {"total": len(products_by_store.get(store, [])), "found": 0}
         for store in all_store_types
     }
     
-    # Manually set total for static checkers
-    tracked_stores["unicorn"]["total"] = 5 # Fixed variants
-    tracked_stores["vijay_sales"]["total"] = 5 # Fixed variants
-    tracked_stores["sangeetha"]["total"] = 5  # 5 variants
+    # Manually set total for static checkers - PAUSED/IGNORED
+    # Setting them to 0 prevents them from skewing the total_tracked count when paused.
+    tracked_stores["unicorn"]["total"] = 0 
+    tracked_stores["vijay_sales"]["total"] = 0
+    tracked_stores["sangeetha"]["total"] = 0
 
     
     total_tracked = sum(data['total'] for data in tracked_stores.values())
@@ -894,7 +950,7 @@ def main_logic():
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         future_to_store = {}
         
-        # Submit tasks for DB-tracked stores
+        # Submit tasks for DB-tracked stores (Jiomart, Oppo, Flipkart, etc.)
         for store_type in STORE_CHECKERS_MAP.keys():
             if products_by_store.get(store_type):
                 future = executor.submit(
@@ -905,13 +961,13 @@ def main_logic():
                 )
                 future_to_store[future] = store_type
 
-        # Submit Unicorn task separately
-        future_to_store[executor.submit(check_unicorn_store)] = "unicorn"
+        # Submit static store tasks (PAUSED)
+        # Note: check_unicorn_store(), check_vijay_sales_store(), and check_sangeetha_store() 
+        # are commented out below to pause their execution as requested.
         
-        # Submit Vijay Sales task separately <-- ADDED
-        future_to_store[executor.submit(check_vijay_sales_store)] = "vijay_sales"
-
-        future_to_store[executor.submit(check_sangeetha_store)] = "sangeetha"
+        # future_to_store[executor.submit(check_unicorn_store)] = "unicorn"
+        # future_to_store[executor.submit(check_vijay_sales_store)] = "vijay_sales"
+        # future_to_store[executor.submit(check_sangeetha_store)] = "sangeetha"
 
         
         # Collect results (counts only)
