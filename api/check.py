@@ -21,6 +21,20 @@ FLIPKART_PROXY_URL = "https://my-flipkart-worker.rahulhns41.workers.dev/flipkart
 
 CRON_SECRET = os.getenv("CRON_SECRET")
 
+OPPO_SERVICEABILITY_URL = "https://opsg-gateway-in.oppo.com/v2/api/rest/mall/product/retail/store/fetch"
+# Base headers for consistency
+OPPO_BASE_HEADERS = {
+    "Content-Type": "application/json",
+    "client-version": "13.0.0.0",
+    "platform": "web",
+    "language": "en-IN",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Origin": "https://www.oppo.com",
+    "Accept-Language": "en-US,en;q=0.9",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
 # --- Amazon PAAPI Credentials ---
 AMAZON_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AMAZON_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
