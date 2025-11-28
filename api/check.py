@@ -941,7 +941,7 @@ def main_logic():
     # Manually set total for static checkers - PAUSED/IGNORED
     # Setting them to 0 prevents them from skewing the total_tracked count when paused.
     tracked_stores["unicorn"]["total"] = 0 
-    tracked_stores["vijay_sales"]["total"] = 0
+    tracked_stores["vijay_sales"]["total"] = 5
     tracked_stores["sangeetha"]["total"] = 0
 
     
@@ -967,7 +967,7 @@ def main_logic():
         # We explicitly skip the submission of the hardcoded checkers here
         
         # future_to_store[executor.submit(check_unicorn_store)] = "unicorn"
-        # future_to_store[executor.submit(check_vijay_sales_store)] = "vijay_sales"
+        future_to_store[executor.submit(check_vijay_sales_store)] = "vijay_sales"
         # future_to_store[executor.submit(check_sangeetha_store)] = "sangeetha"
 
         
