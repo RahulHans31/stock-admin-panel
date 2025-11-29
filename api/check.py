@@ -254,7 +254,6 @@ def check_croma_product(product, pincode):
         print(f"[error] Croma check failed for {product['name']}: {e}")
     return None
 
-# --- Flipkart Checker (API - OK) ---
 def check_flipkart_product(product, pincode):
     """Checks stock for a single Flipkart product at one pincode via proxy."""
     try:
@@ -268,9 +267,12 @@ def check_flipkart_product(product, pincode):
         data = res.json()
         response = data.get("RESPONSE", {}).get(product["productId"], {})
         listing = response.get("listingSummary", {})
+
+        # FULL REAL LOGIC
+        serviceable = listing.get("serviceable", False)
         available = listing.get("available", False)
 
-        if available:
+        if serviceable and available:
             price = listing.get("pricing", {}).get("finalPrice", {}).get("decimalValue", None)
             print(f"[FLIPKART] ✅ {product['name']} deliverable to {pincode}")
             return (
@@ -279,7 +281,7 @@ def check_flipkart_product(product, pincode):
                 + (f", 💰 Price: ₹{price}" if price else "")
             )
 
-        print(f"[FLIPKART] ❌ {product['name']} not deliverable at {pincode}")
+        print(f"[FLIPKART] ❌ {product['name']} not available or not deliverable at {pincode}")
         return None
 
     except Exception as e:
