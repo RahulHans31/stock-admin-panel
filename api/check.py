@@ -427,7 +427,7 @@ def check_reliance_digital_product(product, pincode):
                 f"📍 Pincode: {pincode}"
             )
 
-        return None
+        return data
 
     except Exception as e:
         print("[RD] Worker failed:", e)
