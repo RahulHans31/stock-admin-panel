@@ -404,7 +404,7 @@ def check_reliance_digital_product(product, pincode):
 
         res = requests.post(
             "https://proxyrd.rahulhns41.workers.dev/",
-            json=payload,
+            json={"article_id": "494741624", "pincode": "110016"},
             headers={"X-Bypass": str(time.time())},  # Prevent Cloudflare caching
             timeout=25
         )
@@ -419,7 +419,7 @@ def check_reliance_digital_product(product, pincode):
             print("[RD] JSON Parse Error:", res.text)
             return None
 
-        print("[RD] available:", data.get("available") , payload)
+        print("[RD] available:", data.get("available") , payload , data)
 
         if data.get("available"):
             return (
