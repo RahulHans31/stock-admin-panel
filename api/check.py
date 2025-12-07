@@ -419,7 +419,7 @@ def check_reliance_digital_product(product, pincode):
             print("[RD] JSON Parse Error:", res.text)
             return None
 
-        print("[RD] available:", data.get("available") , data)
+        print("[RD] available:", data.get("available") , payload)
 
         if data.get("available"):
             return (
