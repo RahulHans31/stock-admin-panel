@@ -739,6 +739,8 @@ def check_unicorn_store():
 # 🛍️ VIJAY SALES STATIC CHECKER (NEW)
 # ==================================
 def check_vijay_sales_store():
+
+    pass 
     """Checks stock for the 5 fixed iPhone 17 variants on Vijay Sales."""
     # Use the globally loaded pincodes
     PINCODES = PINCODES_TO_CHECK  
