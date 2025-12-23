@@ -976,7 +976,7 @@ def main_logic():
         # We explicitly skip the submission of the hardcoded checkers here
         
         # future_to_store[executor.submit(check_unicorn_store)] = "unicorn"
-        future_to_store[executor.submit(check_vijay_sales_store)] = "vijay_sales"
+        #future_to_store[executor.submit(check_vijay_sales_store)] = "vijay_sales"
         # future_to_store[executor.submit(check_sangeetha_store)] = "sangeetha"
 
         
