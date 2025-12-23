@@ -739,8 +739,6 @@ def check_unicorn_store():
 # 🛍️ VIJAY SALES STATIC CHECKER (NEW)
 # ==================================
 def check_vijay_sales_store():
-
-    pass 
     """Checks stock for the 5 fixed iPhone 17 variants on Vijay Sales."""
     # Use the globally loaded pincodes
     PINCODES = PINCODES_TO_CHECK  
@@ -952,7 +950,7 @@ def main_logic():
     # Manually set total for static checkers - PAUSED/IGNORED
     # Setting them to 0 prevents them from skewing the total_tracked count when paused.
     tracked_stores["unicorn"]["total"] = 0 
-    tracked_stores["vijay_sales"]["total"] = 5
+    tracked_stores["vijay_sales"]["total"] = 0
     tracked_stores["sangeetha"]["total"] = 0
 
     
