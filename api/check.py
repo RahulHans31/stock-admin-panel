@@ -12,6 +12,12 @@ TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")
 PINCODES_STR = os.getenv("PINCODES_TO_CHECK", "110016")
 PINCODES_TO_CHECK = [p.strip() for p in PINCODES_STR.split(',') if p.strip()]
 
+# --- WHATSAPP CONFIG ---
+# Replace with your Cloudflare URL
+WHATSAPP_API_URL = "https://juice-cooperative-frost-scotia.trycloudflare.com/send" 
+WHATSAPP_GROUP_NAME = os.getenv("WHATSAPP_GROUP_NAME", "Stock Alerts") 
+# -----------------------
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -73,12 +79,39 @@ STORE_TOPIC_IDS = {
 
 # --- END MODIFIED ---
 
+def send_whatsapp_message(message):
+    """Fires a POST request to the local WhatsApp API. No waiting for response."""
+    if not WHATSAPP_API_URL:
+        return
+
+    try:
+        # Convert Markdown links [Text](URL) -> Text: URL
+        # We use simple string replacement or regex if imported
+        import re
+        clean_message = re.sub(r'\[(.*?)\]\((.*?)\)', r'\1: \2', message)
+
+        payload = {
+            "group": WHATSAPP_GROUP_NAME,
+            "message": clean_message
+        }
+        
+        # Timeout=1 ensures we don't hang your script if the API is slow
+        requests.post(WHATSAPP_API_URL, json=payload, timeout=1)
+        
+    except Exception:
+        # We explicitly ignore errors so the main script NEVER stops
+        pass
+
 # ==================================
 # 💬 TELEGRAM UTILITIES
 # ==================================
 # --- MODIFIED: Function now accepts an optional thread_id ---
 def send_telegram_message(message, chat_id=TELEGRAM_GROUP_ID, thread_id=None):
     """Sends a single message to a specified chat ID and optional topic thread."""
+    # 1. Fire to WhatsApp immediately
+    send_whatsapp_message(message)
+
+    
     if not TELEGRAM_BOT_TOKEN or not chat_id:
         print(f"[warn] Missing Telegram config for chat {chat_id}.")
         return
