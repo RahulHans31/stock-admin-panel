@@ -14,7 +14,7 @@ PINCODES_TO_CHECK = [p.strip() for p in PINCODES_STR.split(',') if p.strip()]
 
 # --- WHATSAPP CONFIG ---
 # Replace with your Cloudflare URL
-WHATSAPP_API_URL = "https://juice-cooperative-frost-scotia.trycloudflare.com/send" 
+WHATSAPP_API_URL = "https://bituminous-ayden-estrous.ngrok-free.dev/whatsapp/send" 
 WHATSAPP_GROUP_NAME = os.getenv("WHATSAPP_GROUP_NAME", "Stock Alerts") 
 # -----------------------
 
