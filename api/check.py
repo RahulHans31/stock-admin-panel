@@ -18,9 +18,6 @@ WHATSAPP_API_URL = "https://bituminous-ayden-estrous.ngrok-free.dev/whatsapp/sen
 WHATSAPP_GROUP_NAME = os.getenv("WHATSAPP_GROUP_NAME", "Stock Alerts") 
 # -----------------------
 
-WHATSAPP_MESSAGES = []
-WHATSAPP_LOCK = threading.Lock() # Ensures threads don't clash
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -112,11 +109,7 @@ def send_whatsapp_message(message):
 def send_telegram_message(message, chat_id=TELEGRAM_GROUP_ID, thread_id=None):
     """Sends a single message to a specified chat ID and optional topic thread."""
     # 1. Fire to WhatsApp immediately
-    import re
-    clean_msg = re.sub(r'\[(.*?)\]\((.*?)\)', r'\1: \2', message)
-    
-    with WHATSAPP_LOCK:
-        WHATSAPP_MESSAGES.append(clean_msg)
+    send_whatsapp_message(message)
 
     
     if not TELEGRAM_BOT_TOKEN or not chat_id:
@@ -969,8 +962,6 @@ def check_sangeetha_store():
 # 🧠 MAIN LOGIC (Original - No Bucketing)
 # ==================================
 def main_logic():
-    global WHATSAPP_MESSAGES
-    WHATSAPP_MESSAGES = []
     start_time = time.time()
     print("[info] Starting stock check...")
     products = get_products_from_db()
@@ -1037,22 +1028,6 @@ def main_logic():
     total_found = sum(data['found'] for data in tracked_stores.values())
     duration = round(time.time() - start_time, 2)
     timestamp = datetime.datetime.now().strftime("%d %b %Y %I:%M %p")
-
-    if WHATSAPP_MESSAGES:
-        print(f"[WA] Sending {len(WHATSAPP_MESSAGES)} alerts in one go...")
-        
-        # Join all messages with a separator line
-        final_message = "\n\n➖➖➖➖➖➖➖➖\n\n".join(WHATSAPP_MESSAGES)
-        
-        payload = {
-            "group": WHATSAPP_GROUP_NAME,
-            "message": final_message
-        }
-        
-        try:
-            requests.post(WHATSAPP_API_URL, json=payload, timeout=5)
-        except Exception as e:
-            print(f"[WA] Failed to send: {e}"
     
     summary_lines = [
         f"Found: {total_found}/{total_tracked} products available.",
