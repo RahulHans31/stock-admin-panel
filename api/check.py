@@ -488,15 +488,22 @@ def check_vivo_api(product):
     """Checks Vivo stock for the specific SKU ID in the URL."""
     return check_vivo_iqoo_api(product, "vivo")
 
-# --- Vivo/iQOO CORE API Checker (MODIFIED TO CHECK SPECIFIC SKU) ---
+# --- Vivo/iQOO CORE API Checker (FIXED: uses /api/product/all/ for real stock data) ---
 def check_vivo_iqoo_api(product, store_type):
     """
     Checks stock for a *specific* SKU variant within a product.
     store_type should be 'vivo' or 'iqoo'.
+    
+    Uses the /api/product/all/{spuId} endpoint which returns actual stock
+    quantities via commodityDetailSpu.skuList[].stock and stockOutChecked.
+    
+    NOTE: The old /api/product/activityInfo/all/ endpoint was UNRELIABLE.
+    Its reservableId field relates to reservation campaigns, not stock.
+    reservableId == -1 was true for BOTH in-stock and sold-out products.
     """
-    product_id = product["productId"] # This is the SPU ID
-    store_url_base = f"https://mshop.{store_type}.com/in" # Build base URL
-    API_URL = f"{store_url_base}/api/product/activityInfo/all/{product_id}"
+    product_id = product["productId"]  # This is the SPU ID
+    store_url_base = f"https://mshop.{store_type}.com/in"
+    API_URL = f"{store_url_base}/api/product/all/{product_id}"
     
     # 1. Extract the specific SKU ID we are tracking
     target_sku_id = extract_sku_id(product["url"])
@@ -510,7 +517,7 @@ def check_vivo_iqoo_api(product, store_type):
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": f"{store_url_base}/product/{product_id}",
-        "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/5.36"
+        "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36"
     }
 
     try:
@@ -518,26 +525,33 @@ def check_vivo_iqoo_api(product, store_type):
         res.raise_for_status()
         data = res.json()
 
-        if data.get("success") != "1" or "data" not in data:
+        if data.get("success") != "1" or not data.get("data"):
             print(f"[{store_type.upper()}_API] ❌ {product['name']} failed. API success was not '1'.")
             return None
 
-        sku_list = data.get("data", {}).get("activitySkuList", [])
+        spu_data = data["data"].get("commodityDetailSpu", {})
+        sku_list = spu_data.get("skuList", [])
+        
         if not sku_list:
             print(f"[{store_type.upper()}_API] ❌ {product['name']} - No SKU list found in response.")
             return None
 
         is_in_stock = False
         product_title = product["name"]
+        sku_price = None
+        sku_found = False
         
         # 2. Iterate and check ONLY the target SKU ID
         for sku in sku_list:
-            sku_id_from_api = str(sku.get("skuId")) # Ensure comparison is with a string
+            sku_id_from_api = str(sku.get("skuId"))
             
             if sku_id_from_api == target_sku_id:
-                reservable_id = sku.get("activityInfo", {}).get("reservableId")
+                sku_found = True
+                stock_qty = sku.get("stock", 0)
+                stock_out_checked = sku.get("stockOutChecked", 1)
+                marketable = sku.get("marketable", 0)
                 
-                # Optional: Refine the product name for the alert
+                # Refine the product name for the alert
                 color_name = sku.get("colorName", "")
                 rom_name = sku.get("romName", "")
                 if color_name and rom_name:
@@ -545,30 +559,34 @@ def check_vivo_iqoo_api(product, store_type):
                 elif color_name:
                     product_title = f"{product['name']} ({color_name})"
                 
-                # The core logic check for specific SKU
-                if reservable_id == -1:
+                # Get the price
+                sku_price = sku.get("salePrice") or sku.get("proPrice")
+                
+                # Stock check: must have stock > 0, not flagged as OOS, and be marketable
+                if int(stock_qty) > 0 and int(stock_out_checked) == 0 and int(marketable) == 1:
                     is_in_stock = True
-                    break  # Found the target SKU and it's in stock
-                else:
-                    # Found the target SKU, but it's OOS, stop checking
-                    break
+                
+                break  # Found the target SKU, stop iterating
         
         # 3. Report result for the specific SKU
         if is_in_stock:
-            print(f"[{store_type.upper()}_API] ✅ {product_title} is IN STOCK")
+            print(f"[{store_type.upper()}_API] ✅ {product_title} is IN STOCK (qty: {stock_qty})")
+            price_str = f"💰 Price: ₹{int(sku_price):,}" if sku_price else "💰 Price: N/A"
             return (
                 f"[{product_title}]({product['affiliateLink'] or product['url']})\n"
-                f"💰 Price: N/A (API doesn't show price)"
+                f"{price_str}"
             )
         else:
-            # Report OOS/SKU not found status
-            print(f"[{store_type.upper()}_API] ❌ {product['name']} (SKU {target_sku_id}) is Out of Stock.")
+            if not sku_found:
+                print(f"[{store_type.upper()}_API] ❌ {product['name']} - SKU {target_sku_id} not found in product data.")
+            else:
+                print(f"[{store_type.upper()}_API] ❌ {product['name']} (SKU {target_sku_id}) is Out of Stock.")
             return None
             
     except Exception as e:
         print(f"[error] {store_type.upper()} API check failed for {product_id} / {target_sku_id}: {e}")
         return None
-# --- END MODIFIED VIVO/IQOO CHECKERS ---
+# --- END FIXED VIVO/IQOO CHECKERS ---
 
 
 # --- MODIFIED: OPPO Serviceability Checker (Uses SKU + Pincode) ---
