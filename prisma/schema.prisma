@@ -5,25 +5,23 @@ generator client {
 }
 
 // This block defines your database connection.
-// It points to the Vercel Postgres database.
+// It points to your new Supabase PostgreSQL database.
 datasource db {
-  provider = "postgresql"
-  // This MUST match the variable Vercel created for you.
-  url      = env("DATABASE_URL") 
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // This is the model for your products table.
 // This defines the structure of your data.
 model Product {
-  id        Int      @id @default(autoincrement())
-  name      String
-  url       String
-  productId String   @map("product_id")
-  storeType String   @map("store_type")
-  createdAt DateTime @default(now()) @map("created_at")
-  partNumber String?  @map("part_number")
-
-  // --- ADD THIS LINE ---
+  id            Int      @id @default(autoincrement())
+  name          String
+  url           String
+  productId     String   @map("product_id")
+  storeType     String   @map("store_type")
+  createdAt     DateTime @default(now()) @map("created_at")
+  partNumber    String?  @map("part_number")
   affiliateLink String?  @map("affiliate_link") // Optional, for your link
 
   @@map("products")
