@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  tracker:
+    build: .
+    container_name: stock-tracker
+    restart: unless-stopped
+    environment:
+      # Database
+      DATABASE_URL: ${DATABASE_URL}
+
+      # Telegram Configuration
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_GROUP_ID: ${TELEGRAM_GROUP_ID}
+
+      # Store Topic IDs (Optional - for Telegram topics/threads)
+      CROMA_TOPIC_ID: ${CROMA_TOPIC_ID:-}
+      FLIPKART_TOPIC_ID: ${FLIPKART_TOPIC_ID:-}
+      AMAZON_TOPIC_ID: ${AMAZON_TOPIC_ID:-}
+      IQOO_TOPIC_ID: ${IQOO_TOPIC_ID:-}
+      VIVO_TOPIC_ID: ${VIVO_TOPIC_ID:-}
+      RELIANCE_TOPIC_ID: ${RELIANCE_TOPIC_ID:-}
+      OPPO_TOPIC_ID: ${OPPO_TOPIC_ID:-}
+      JIOMART_TOPIC_ID: ${JIOMART_TOPIC_ID:-}
+      UNICORN_TOPIC_ID: ${UNICORN_TOPIC_ID:-}
+      VIJAY_SALES_TOPIC_ID: ${VIJAY_SALES_TOPIC_ID:-}
+      SANGEETHA_TOPIC_ID: ${SANGEETHA_TOPIC_ID:-}
+
+      # Pincodes to check (comma-separated)
+      PINCODES_TO_CHECK: ${PINCODES_TO_CHECK:-110016}
+
+      # Amazon PAAPI Credentials (Optional)
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AMAZON_PARTNER_TAG: ${AMAZON_PARTNER_TAG:-}
+
+      # WhatsApp (Optional)
+      WHATSAPP_API_URL: ${WHATSAPP_API_URL:-}
+      WHATSAPP_GROUP_NAME: ${WHATSAPP_GROUP_NAME:-Stock Alerts}
+
+      # Check interval in seconds (default: 300 = 5 minutes)
+      CHECK_INTERVAL_SECONDS: ${CHECK_INTERVAL_SECONDS:-300}
+
+    # Keep container running and restart on failure
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f tracker.py || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
