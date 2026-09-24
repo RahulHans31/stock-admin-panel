@@ -183,6 +183,8 @@ export async function addProduct(formData) {
   const url = formData.get('url');
   const partNumber = formData.get('partNumber') || null;
   const affiliateLink = formData.get('affiliateLink') || null;
+  const targetPriceRaw = formData.get('targetPrice');
+  const targetPrice = targetPriceRaw ? parseFloat(targetPriceRaw) : null;
 
   const details = await getProductDetails(url, partNumber);
   if (details.error) return { error: details.error };
@@ -196,6 +198,7 @@ export async function addProduct(formData) {
         storeType: details.storeType,
         partNumber: details.partNumber,
         affiliateLink,
+        targetPrice,
       },
     });
 
@@ -204,6 +207,17 @@ export async function addProduct(formData) {
   } catch {
     return { error: 'Failed to add product (duplicate?)' };
   }
+}
+
+/* ---------------- UPDATE TARGET PRICE ---------------- */
+export async function updateTargetPrice(id, targetPriceRaw) {
+  const targetPrice = targetPriceRaw !== '' && targetPriceRaw != null
+    ? parseFloat(targetPriceRaw)
+    : null;
+  try {
+    await prisma.product.update({ where: { id }, data: { targetPrice } });
+    revalidatePath('/');
+  } catch {}
 }
 
 /* ---------------- DELETE PRODUCT ---------------- */

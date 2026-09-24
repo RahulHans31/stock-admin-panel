@@ -36,6 +36,7 @@ export function AddProductForm({ addProductAction }) {
   const formRef = useRef(null);
   const [url, setUrl] = useState('');
   const [productId, setProductId] = useState('');
+  const [targetPrice, setTargetPrice] = useState('');
   const { storeType, showPartNumber, extracted } = getStoreDetails(url);
 
   /* OPPO state */
@@ -92,6 +93,7 @@ export function AddProductForm({ addProductAction }) {
     formRef.current?.reset();
     setUrl('');
     setProductId('');
+    setTargetPrice('');
     setVariants([]);
     setSelectedVariant('');
   }
@@ -99,33 +101,90 @@ export function AddProductForm({ addProductAction }) {
   const isOppoSelected = storeType === 'oppo';
 
   return (
-    <form ref={formRef} action={formAction} className="flex flex-col w-full space-y-3">
-      <div className="flex w-full items-center space-x-2">
-        <Input type="url" name="url" placeholder="Paste product URL (Jiomart, Flipkart, Amazon, etc.)" required value={url} onChange={e => setUrl(e.target.value)} />
-        <Button type="submit">Add Product</Button>
+    <form ref={formRef} action={formAction} className="flex flex-col w-full space-y-4">
+      <div className="flex flex-col sm:flex-row w-full items-stretch sm:items-center gap-2">
+        <div className="flex-1 relative group">
+          <Input
+            type="url"
+            name="url"
+            placeholder="Paste product URL (Jiomart, Flipkart, Amazon, etc.)"
+            required
+            value={url}
+            onChange={e => setUrl(e.target.value)}
+            className="pr-20 transition-all focus:ring-2 focus:ring-primary/20"
+          />
+          {storeType !== 'unknown' && url && (
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs px-2 py-0.5 rounded-md bg-primary/10 text-primary font-medium capitalize">
+              {storeType.replace('_', ' ')}
+            </span>
+          )}
+        </div>
+        <Button
+          type="submit"
+          className="sm:w-auto w-full font-semibold shadow-sm hover:shadow-md transition-all"
+        >
+          Add Product
+        </Button>
       </div>
 
       {isOppoSelected && variants.length > 0 && (
-        <select className="border p-2 rounded" value={selectedVariant} onChange={e => setSelectedVariant(e.target.value)}>
-          <option value="">Select OPPO Variant (SKU)</option>
-          {variants.map(v => (
-            <option value={v.sku} key={v.sku}>{v.name}</option>
-          ))}
-        </select>
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium text-foreground">Select Variant</label>
+          <select
+            className="w-full border border-input bg-background hover:bg-accent/50 px-3 py-2 rounded-md text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-primary/20"
+            value={selectedVariant}
+            onChange={e => setSelectedVariant(e.target.value)}
+          >
+            <option value="">Choose OPPO variant (SKU)</option>
+            {variants.map(v => (
+              <option value={v.sku} key={v.sku}>{v.name}</option>
+            ))}
+          </select>
+        </div>
       )}
 
       {showPartNumber && !isOppoSelected && (
-        <Input
-          type="text"
-          name="partNumber"
-          value={productId}
-          placeholder="Product ID (e.g., ASIN/PID/Part# for Amazon/Flipkart/Apple)"
-          required
-          onChange={e => setProductId(e.target.value)}
-        />
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium text-foreground">Product Identifier</label>
+          <Input
+            type="text"
+            name="partNumber"
+            value={productId}
+            placeholder="Product ID (e.g., ASIN/PID/Part# for Amazon/Flipkart/Apple)"
+            required
+            onChange={e => setProductId(e.target.value)}
+            className="transition-all focus:ring-2 focus:ring-primary/20"
+          />
+        </div>
       )}
 
-      <Input type="url" name="affiliateLink" placeholder="Affiliate Link (optional)" />
+      <Input
+        type="url"
+        name="affiliateLink"
+        placeholder="Affiliate Link (optional)"
+        className="transition-all focus:ring-2 focus:ring-primary/20"
+      />
+
+      {storeType === 'flipkart' && (
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium text-foreground">
+            Target Price <span className="text-muted-foreground font-normal">(optional — alert only if price ≤ this)</span>
+          </label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">₹</span>
+            <Input
+              type="number"
+              name="targetPrice"
+              min="0"
+              step="1"
+              placeholder="e.g. 15000"
+              value={targetPrice}
+              onChange={e => setTargetPrice(e.target.value)}
+              className="pl-7 transition-all focus:ring-2 focus:ring-primary/20"
+            />
+          </div>
+        </div>
+      )}
     </form>
   );
 }

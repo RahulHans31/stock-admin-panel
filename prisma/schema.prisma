@@ -22,7 +22,8 @@ model Product {
   storeType     String   @map("store_type")
   createdAt     DateTime @default(now()) @map("created_at")
   partNumber    String?  @map("part_number")
-  affiliateLink String?  @map("affiliate_link") // Optional, for your link
+  affiliateLink String?  @map("affiliate_link")
+  targetPrice   Decimal? @map("target_price")
 
   @@map("products")
 }
